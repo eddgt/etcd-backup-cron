@@ -1,26 +1,29 @@
 ---
 # roles/etcd_restore/defaults/main.yml
-# Valores por defecto para el rol de restauración de etcd
+# Valores por defecto del rol de restauración de etcd para RKE2.
 
-etcd_client_port: 2379
-etcd_cert_dir: "/etc/kubernetes/pki/etcd"
-etcd_ca_cert: "{{ etcd_cert_dir }}/ca.crt"
-etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
-etcd_client_key: "{{ etcd_cert_dir }}/server.key"
+# --- Binarios y rutas de RKE2 ---
+rke2_bin: "/usr/local/bin/rke2"
+rke2_kubectl: "/var/lib/rancher/rke2/bin/kubectl"
+rke2_kubeconfig: "/etc/rancher/rke2/rke2.yaml"
+rke2_snapshot_dir: "/var/lib/rancher/rke2/server/db/snapshots"
+rke2_etcd_dir: "/var/lib/rancher/rke2/server/db/etcd"
 
-etcd_local_backup_dir: "/var/lib/etcd-backups"
-etcd_data_dir: "/var/lib/etcd"
+# Directorio de storage central (servidores de backup). Normalmente en group_vars/all.yml.
+etcd_backup_server_dir: "/srv/backup/kubernetes/etcd"
 
-# --- Configuración de la Restauración Dinámica ---
-# Origen del snapshot a restaurar:
-# - 'backup_server': Descarga el snapshot desde el servidor de storage central.
-# - 'controller': Utiliza un snapshot ubicado localmente en el host controlador de Ansible.
+# Nodo donde se ejecuta el 'cluster-reset'. El resto de control planes se reincorpora.
+# Por defecto, el primer host del grupo control_planes.
+etcd_restore_primary: "{{ groups['control_planes'][0] }}"
+
+# --- Origen del snapshot a restaurar ---
+# - 'backup_server': descarga el snapshot desde el servidor de storage central.
+# - 'controller': usa un snapshot ubicado localmente en el host controlador de Ansible.
 etcd_restore_source: "backup_server"
 
-# Directorio local en el host controlador de Ansible donde se guardan los backups (cuando etcd_restore_source == 'controller')
+# Directorio local en el controlador (cuando etcd_restore_source == 'controller')
 etcd_restore_local_path: "{{ playbook_dir }}/backups"
 
-# Nombre o ruta del archivo de snapshot a restaurar.
-# Si se deja vacío (""), el playbook buscará automáticamente el snapshot más reciente (*.db.gz) en el origen seleccionado.
+# Nombre o ruta del snapshot a restaurar.
+# Vacío ("") => se selecciona automáticamente el más reciente del origen elegido.
 etcd_restore_file_path: ""
-

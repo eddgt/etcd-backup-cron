@@ -1,23 +1,19 @@
 ---
 # roles/etcd_backup/defaults/main.yml
-# Valores por defecto para el rol etcd_backup (pueden ser sobreescritos en group_vars/host_vars)
+# Valores por defecto del rol etcd_backup (sobreescribibles en group_vars/host_vars)
 
-etcd_client_port: 2379
-etcd_cert_dir: "/etc/kubernetes/pki/etcd"
-etcd_ca_cert: "{{ etcd_cert_dir }}/ca.crt"
-etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
-etcd_client_key: "{{ etcd_cert_dir }}/server.key"
-
-etcd_local_backup_dir: "/var/lib/etcd-backups"
+# Directorio donde RKE2 deposita automáticamente sus snapshots de etcd en cada control plane
 rke2_snapshot_dir: "/var/lib/rancher/rke2/server/db/snapshots"
+
+# Directorio final de almacenamiento en los servidores de backup
 etcd_backup_server_dir: "/srv/backup/kubernetes/etcd"
 
+# Método de transferencia:
+#  - 'controller_mediated' (por defecto): el controlador Ansible hace de puente.
+#  - 'direct_rsync': los masters hacen rsync directo al storage (requiere conectividad y SSH).
 etcd_transfer_mode: "controller_mediated"
 
-# --- Políticas de Retención ---
-# Cantidad de copias de seguridad a retener en los servidores de backup por cada master.
-# En el origen (masters), la retención de las últimas 3 copias ya es gestionada por el motor interno de Kubernetes.
+# --- Política de Retención ---
+# Cantidad de copias a retener por cada master en los servidores de backup.
+# La retención en el origen (control planes) la gestiona el propio RKE2.
 etcd_backup_server_retention_count: 3
-
-etcd_backup_timer_calendar: "*-*-* 04:00:00" # Cada 4 horas por defecto
-etcd_backup_timer_accuracy: "5m"

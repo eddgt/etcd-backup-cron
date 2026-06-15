@@ -1,159 +1,236 @@
 ---
 # roles/etcd_restore/tasks/main.yml
-# Tareas de restauración ante desastres para etcd
+# Restauración ante desastres de etcd para RKE2 (clúster HA).
+#
+# Procedimiento oficial de RKE2:
+#   1. Detener rke2-server en TODOS los control planes.
+#   2. En el nodo primario: rke2 server --cluster-reset --cluster-reset-restore-path=<snapshot>.
+#   3. Iniciar rke2-server en el primario y esperar a que la API responda.
+#   4. En el resto de control planes: borrar el directorio db/etcd y reiniciar para reincorporarse.
+#   5. Validar la salud del clúster.
+#
+# Ansible ejecuta cada tarea como barrera (espera a todos los hosts antes de la siguiente),
+# por lo que las tareas 'run_once' sobre el primario garantizan el orden primario -> secundarios.
 
 # ==============================================================================
-# FASE 1: Búsqueda y Preparación del Archivo de Backup
+# FASE 1: Selección del snapshot a restaurar
 # ==============================================================================
-
-# Preparar directorio temporal local en el controlador para descargas si es necesario
-- name: RECUPERACIÓN - Crear directorio temporal en host Ansible controlador
-  ansible.builtin.file:
-    path: "/tmp/ansible-etcd-restore"
-    state: directory
-  delegate_to: localhost
-  become: false
+- name: RESTAURACIÓN - Mostrar el nodo primario seleccionado para el cluster-reset
+  ansible.builtin.debug:
+    msg: "Nodo primario: {{ etcd_restore_primary }}. El resto de control planes se reincorporará tras el reset."
   run_once: true
-  when: etcd_restore_source == 'backup_server'
 
-# --- FLUJO A: Origen en Servidor de Backup Remoto ---
-- name: STORAGE - Buscar archivos de backup en el servidor de storage
+# --- Origen A: Servidor de Backup remoto ---
+- name: STORAGE - Buscar snapshots en el servidor de storage
   ansible.builtin.find:
     paths: "{{ etcd_backup_server_dir }}"
-    patterns: "*.db.gz"
+    patterns: "*etcd-snapshot-*"
+    file_type: file
   register: remote_snapshots
   delegate_to: "{{ groups['backup_servers'][0] }}"
   run_once: true
   when: etcd_restore_source == 'backup_server' and etcd_restore_file_path == ""
 
-- name: STORAGE - Validar que existan backups en el servidor de storage
+- name: STORAGE - Validar que existan snapshots en el storage
   ansible.builtin.fail:
-    msg: "No se encontraron archivos de backup (*.db.gz) en el directorio {{ etcd_backup_server_dir }} del servidor de storage."
-  when: >
-    etcd_restore_source == 'backup_server' and 
-    etcd_restore_file_path == "" and 
-    (remote_snapshots.files is not defined or remote_snapshots.files | length == 0)
+    msg: "No se encontraron snapshots en {{ etcd_backup_server_dir }} del servidor de storage."
   run_once: true
+  when:
+    - etcd_restore_source == 'backup_server'
+    - etcd_restore_file_path == ""
+    - remote_snapshots.files is not defined or remote_snapshots.files | length == 0
 
-- name: STORAGE - Determinar el nombre del snapshot más reciente en el storage
+- name: STORAGE - Seleccionar el snapshot más reciente del storage
   ansible.builtin.set_fact:
     selected_backup_filename: "{{ (remote_snapshots.files | sort(attribute='mtime', reverse=true) | first).path | basename }}"
   run_once: true
   when: etcd_restore_source == 'backup_server' and etcd_restore_file_path == ""
 
-- name: STORAGE - Establecer nombre de archivo específico provisto por el usuario
+- name: STORAGE - Usar el snapshot específico indicado por el usuario
   ansible.builtin.set_fact:
     selected_backup_filename: "{{ etcd_restore_file_path | basename }}"
   run_once: true
   when: etcd_restore_source == 'backup_server' and etcd_restore_file_path != ""
 
-- name: STORAGE - Descargar el snapshot seleccionado al host controlador
+- name: STORAGE - Descargar el snapshot seleccionado al controlador
   ansible.builtin.fetch:
     src: "{{ etcd_backup_server_dir }}/{{ selected_backup_filename }}"
-    dest: "/tmp/ansible-etcd-restore/restore-target.db.gz"
+    dest: "/tmp/ansible-etcd-restore/{{ selected_backup_filename }}"
     flat: true
   delegate_to: "{{ groups['backup_servers'][0] }}"
   run_once: true
   when: etcd_restore_source == 'backup_server'
 
-- name: STORAGE - Registrar ruta local del snapshot descargado
+- name: STORAGE - Registrar la ruta local del snapshot en el controlador
   ansible.builtin.set_fact:
-    local_snapshot_path: "/tmp/ansible-etcd-restore/restore-target.db.gz"
+    controller_snapshot_path: "/tmp/ansible-etcd-restore/{{ selected_backup_filename }}"
+  run_once: true
   when: etcd_restore_source == 'backup_server'
 
-
-# --- FLUJO B: Origen en el Controlador Local (Ansible) ---
-- name: CONTROLADOR - Buscar archivos de backup en el directorio local
+# --- Origen B: Controlador local (host Ansible) ---
+- name: CONTROLADOR - Buscar snapshots en el directorio local
   ansible.builtin.find:
     paths: "{{ etcd_restore_local_path }}"
-    patterns: "*.db.gz"
+    patterns: "*etcd-snapshot-*"
+    file_type: file
   register: local_snapshots
   delegate_to: localhost
   become: false
   run_once: true
   when: etcd_restore_source == 'controller' and etcd_restore_file_path == ""
 
-- name: CONTROLADOR - Validar que existan backups en el directorio local del controlador
+- name: CONTROLADOR - Validar que existan snapshots locales
   ansible.builtin.fail:
-    msg: "No se encontraron archivos de backup (*.db.gz) en el directorio local {{ etcd_restore_local_path }}."
-  when: >
-    etcd_restore_source == 'controller' and 
-    etcd_restore_file_path == "" and 
-    (local_snapshots.files is not defined or local_snapshots.files | length == 0)
+    msg: "No se encontraron snapshots en el directorio local {{ etcd_restore_local_path }}."
   run_once: true
+  when:
+    - etcd_restore_source == 'controller'
+    - etcd_restore_file_path == ""
+    - local_snapshots.files is not defined or local_snapshots.files | length == 0
 
 - name: CONTROLADOR - Seleccionar el snapshot local más reciente
   ansible.builtin.set_fact:
-    local_snapshot_path: "{{ (local_snapshots.files | sort(attribute='mtime', reverse=true) | first).path }}"
+    controller_snapshot_path: "{{ (local_snapshots.files | sort(attribute='mtime', reverse=true) | first).path }}"
   run_once: true
   when: etcd_restore_source == 'controller' and etcd_restore_file_path == ""
 
-- name: CONTROLADOR - Validar existencia de archivo local específico
+- name: CONTROLADOR - Resolver la ruta del archivo local específico
+  ansible.builtin.set_fact:
+    controller_snapshot_path: "{{ etcd_restore_file_path if etcd_restore_file_path.startswith('/') else (etcd_restore_local_path ~ '/' ~ etcd_restore_file_path) }}"
+  run_once: true
+  when: etcd_restore_source == 'controller' and etcd_restore_file_path != ""
+
+- name: CONTROLADOR - Validar existencia del archivo local específico
   ansible.builtin.stat:
-    path: "{{ (etcd_restore_file_path is abs) | ternary(etcd_restore_file_path, etcd_restore_local_path ~ '/' ~ etcd_restore_file_path) }}"
+    path: "{{ controller_snapshot_path }}"
   register: local_specific_file_stat
   delegate_to: localhost
   become: false
   run_once: true
   when: etcd_restore_source == 'controller' and etcd_restore_file_path != ""
 
-- name: CONTROLADOR - Falla si el archivo local especificado no existe
+- name: CONTROLADOR - Falla si el archivo local específico no existe
   ansible.builtin.fail:
-    msg: "El archivo de backup local especificado no existe: {{ local_specific_file_stat.stat.path }}"
-  when: >
-    etcd_restore_source == 'controller' and 
-    etcd_restore_file_path != "" and 
-    not local_specific_file_stat.stat.exists
+    msg: "El archivo de backup local especificado no existe: {{ controller_snapshot_path }}"
+  run_once: true
+  when:
+    - etcd_restore_source == 'controller'
+    - etcd_restore_file_path != ""
+    - not local_specific_file_stat.stat.exists
+
+# ==============================================================================
+# FASE 2: Colocar el snapshot en el nodo primario
+# ==============================================================================
+- name: RESTAURACIÓN - Definir la ruta de destino del snapshot en el nodo primario
+  ansible.builtin.set_fact:
+    restore_snapshot_master_path: "{{ rke2_snapshot_dir }}/{{ controller_snapshot_path | basename }}"
   run_once: true
 
-- name: CONTROLADOR - Registrar ruta del snapshot local específico
-  ansible.builtin.set_fact:
-    local_snapshot_path: "{{ local_specific_file_stat.stat.path }}"
-  when: etcd_restore_source == 'controller' and etcd_restore_file_path != ""
-
-
-# ==============================================================================
-# FASE 2: Transferencia Segura e Instalación del Script
-# ==============================================================================
-
-# Nos aseguramos de que el directorio de backups local existe en el master
-- name: RESTAURAR - Asegurar que el directorio de backups local existe en el Master
+- name: RESTAURACIÓN - Asegurar que el directorio de snapshots existe en el nodo primario
   ansible.builtin.file:
-    path: "{{ etcd_local_backup_dir }}"
+    path: "{{ rke2_snapshot_dir }}"
     state: directory
     mode: '0700'
     owner: root
     group: root
+  delegate_to: "{{ etcd_restore_primary }}"
+  run_once: true
 
-- name: RESTAURAR - Subir el archivo de Backup al Master afectado vía Rsync
-  ansible.posix.synchronize:
-    src: "{{ local_snapshot_path }}"
-    dest: "{{ etcd_local_backup_dir }}/restore-target.db.gz"
-    mode: push
-    rsync_path: "sudo rsync"
-
-- name: RESTAURAR - Instalar el script de restauración en el Master
-  ansible.builtin.template:
-    src: etcd-restore-script.sh.j2
-    dest: /usr/local/bin/etcd-restore.sh
-    mode: '0750'
+- name: RESTAURACIÓN - Copiar el snapshot al nodo primario
+  ansible.builtin.copy:
+    src: "{{ controller_snapshot_path }}"
+    dest: "{{ restore_snapshot_master_path }}"
+    mode: '0600'
     owner: root
     group: root
+  delegate_to: "{{ etcd_restore_primary }}"
+  run_once: true
 
-- name: RESTAURAR - Ejecutar el Script Clínico de Recuperación ante Desastres
-  ansible.builtin.command:
-    cmd: "/usr/local/bin/etcd-restore.sh {{ etcd_local_backup_dir }}/restore-target.db.gz"
-  register: restore_execution_output
+# ==============================================================================
+# FASE 3: Detener RKE2 en TODOS los control planes
+# ==============================================================================
+- name: RESTAURACIÓN - Detener rke2-server en todos los control planes
+  ansible.builtin.systemd:
+    name: rke2-server
+    state: stopped
+
+- name: RESTAURACIÓN - Verificar si existe el script rke2-killall.sh
+  ansible.builtin.stat:
+    path: /usr/local/bin/rke2-killall.sh
+  register: rke2_killall
+
+- name: RESTAURACIÓN - Ejecutar rke2-killall.sh para detener etcd y contenedores residuales
+  ansible.builtin.command: /usr/local/bin/rke2-killall.sh
   changed_when: true
+  when: rke2_killall.stat.exists
 
-- name: RESTAURAR - Mostrar logs detallados de la recuperación
+# ==============================================================================
+# FASE 4: Reset + restauración del snapshot en el nodo primario
+# ==============================================================================
+- name: "RESTAURACIÓN [Primario] - Ejecutar cluster-reset restaurando el snapshot"
+  ansible.builtin.command:
+    cmd: "{{ rke2_bin }} server --cluster-reset --cluster-reset-restore-path={{ restore_snapshot_master_path }}"
+  register: cluster_reset_output
+  changed_when: true
+  delegate_to: "{{ etcd_restore_primary }}"
+  run_once: true
+
+- name: "RESTAURACIÓN [Primario] - Mostrar salida del cluster-reset"
   ansible.builtin.debug:
-    var: restore_execution_output.stdout_lines
+    var: cluster_reset_output.stdout_lines
+  run_once: true
+
+- name: "RESTAURACIÓN [Primario] - Iniciar rke2-server tras el reset"
+  ansible.builtin.systemd:
+    name: rke2-server
+    state: started
+  delegate_to: "{{ etcd_restore_primary }}"
+  run_once: true
+
+- name: "RESTAURACIÓN [Primario] - Esperar a que la API de Kubernetes esté lista (/readyz)"
+  ansible.builtin.command: "{{ rke2_kubectl }} --kubeconfig {{ rke2_kubeconfig }} get --raw=/readyz"
+  register: primary_readyz
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: primary_readyz.rc == 0
+  delegate_to: "{{ etcd_restore_primary }}"
+  run_once: true
 
 # ==============================================================================
-# FASE 3: Limpieza Post-Recuperación e Inspección Final
+# FASE 5: Reincorporar el resto de control planes
 # ==============================================================================
-- name: LIMPIEZA - Eliminar archivos de restore temporales del host Ansible controlador
+- name: "RESTAURACIÓN [Secundarios] - Eliminar el directorio etcd obsoleto"
+  ansible.builtin.file:
+    path: "{{ rke2_etcd_dir }}"
+    state: absent
+  when: inventory_hostname != etcd_restore_primary
+
+- name: "RESTAURACIÓN [Secundarios] - Iniciar rke2-server para reincorporarse al clúster"
+  ansible.builtin.systemd:
+    name: rke2-server
+    state: started
+  when: inventory_hostname != etcd_restore_primary
+
+# ==============================================================================
+# FASE 6: Validación final y limpieza
+# ==============================================================================
+- name: RESTAURACIÓN - Esperar a que la API responda y mostrar el estado de los nodos
+  ansible.builtin.command: "{{ rke2_kubectl }} --kubeconfig {{ rke2_kubeconfig }} get nodes"
+  register: kubectl_nodes_check
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: kubectl_nodes_check.rc == 0
+  delegate_to: "{{ etcd_restore_primary }}"
+  run_once: true
+
+- name: RESTAURACIÓN - Mostrar estado final de los nodos del clúster
+  ansible.builtin.debug:
+    var: kubectl_nodes_check.stdout_lines
+  run_once: true
+
+- name: LIMPIEZA - Eliminar archivos temporales de restauración del controlador
   ansible.builtin.file:
     path: "/tmp/ansible-etcd-restore"
     state: absent
@@ -161,20 +238,3 @@
   become: false
   run_once: true
   when: etcd_restore_source == 'backup_server'
-
-- name: LIMPIEZA - Eliminar archivo subido temporal en el Master
-  ansible.builtin.file:
-    path: "{{ etcd_local_backup_dir }}/restore-target.db.gz"
-    state: absent
-
-- name: INSPECCIÓN - Validar que la API de Kubernetes responda (kubectl get nodes)
-  ansible.builtin.command: kubectl get nodes
-  register: kubectl_nodes_check
-  changed_when: false
-  retries: 5
-  delay: 10
-  until: kubectl_nodes_check.rc == 0
-
-- name: INSPECCIÓN - Mostrar estado de los Nodos K8s post-restauración
-  ansible.builtin.debug:
-    var: kubectl_nodes_check.stdout_lines

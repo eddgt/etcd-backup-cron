@@ -5,34 +5,23 @@
 ansible_user: ansible
 ansible_ssh_private_key_file: "~/.ssh/id_rsa"
 
-# --- Configuración del Backup de etcd ---
-# Puerto por defecto y certificados TLS de etcd
-etcd_client_port: 2379
-etcd_cert_dir: "/etc/kubernetes/pki/etcd"
-etcd_ca_cert: "{{ etcd_cert_dir }}/ca.crt"
-etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
-etcd_client_key: "{{ etcd_cert_dir }}/server.key"
-
-# Directorio temporal local en el nodo Master de K8s para guardar el snapshot inicial
-etcd_local_backup_dir: "/var/lib/etcd-backups"
+# --- Origen del Backup (RKE2) ---
+# Directorio donde RKE2 guarda automáticamente sus snapshots de etcd en cada control plane.
+# El rol etcd_backup solo COPIA el más reciente de aquí hacia los servidores de backup.
 rke2_snapshot_dir: "/var/lib/rancher/rke2/server/db/snapshots"
 
 # --- Configuración del Destino y Transferencia ---
 # Método de transferencia:
-# - 'controller_mediated': El nodo controlador (donde corre Ansible) descarga el backup y luego lo sube a los backup_servers (Excelente para redes segmentadas).
-# - 'direct_rsync': Los K8s masters hacen rsync directo a los backup_servers (Requiere conectividad de red directa y SSH keys configuradas entre ellos).
+# - 'controller_mediated': el nodo controlador (donde corre Ansible) descarga el snapshot
+#   y luego lo sube a los backup_servers (ideal para redes segmentadas).
+# - 'direct_rsync': los masters hacen rsync directo a los backup_servers (requiere
+#   conectividad de red directa y claves SSH configuradas entre ellos).
 etcd_transfer_mode: "controller_mediated"
 
 # Directorio final de almacenamiento en los servidores de backup
 etcd_backup_server_dir: "/srv/backup/kubernetes/etcd"
 
-# --- Políticas de Retención ---
-# Cantidad de copias de seguridad de etcd a retener en los servidores de backup
-# (En el origen/nodos master, el motor interno de Kubernetes gestiona y mantiene las últimas 3 copias)
+# --- Política de Retención ---
+# Cantidad de copias de etcd a retener en los servidores de backup por cada master.
+# (En el origen/control planes, la retención la gestiona el propio motor de RKE2.)
 etcd_backup_server_retention_count: 3
-
-# --- Automatización Periódica ---
-# Configuración del temporizador Systemd en el Master
-etcd_backup_cron_hour: "0" # Si usas cron: Medianoche
-etcd_backup_cron_minute: "0"
-etcd_backup_timer_calendar: "*-*-* 04:00:00" # Systemd Timer: Cada 4 horas

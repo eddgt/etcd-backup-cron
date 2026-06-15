@@ -1,8 +1,12 @@
 ---
 # roles/etcd_backup/tasks/transfer.yml
+#
+# Copia el snapshot de etcd más reciente que RKE2 generó automáticamente en cada
+# control plane hacia los servidores de backup. El snapshot se transfiere "tal cual"
+# (raw), sin comprimir, y el original gestionado por RKE2 NUNCA se modifica ni borra.
 
 # ==============================================================================
-# PREPARACIÓN: Asegurar directorios de destino
+# PREPARACIÓN: Asegurar directorios de destino en los servidores de backup
 # ==============================================================================
 - name: TRANSFERENCIA - Asegurar que existe el directorio de destino en los Servidores de Storage
   ansible.builtin.file:
@@ -14,39 +18,43 @@
   run_once: true
 
 # ==============================================================================
-# DETECCIÓN: Buscar snapshot si la variable no está definida (ej. al usar tags)
+# DETECCIÓN: Localizar el último snapshot generado por RKE2 en cada control plane
 # ==============================================================================
-- name: TRANSFERENCIA - Buscar el último snapshot disponible en el nodo Master
+- name: TRANSFERENCIA - Buscar los snapshots automáticos de RKE2 en el control plane
   ansible.builtin.find:
-    paths: "{{ etcd_local_backup_dir }}"
-    patterns: "etcd-snapshot-*.db.gz"
-  register: local_found_snapshots
-  when: etcd_snapshot_gz is not defined
+    paths: "{{ rke2_snapshot_dir }}"
+    patterns: "etcd-snapshot-*"
+    file_type: file
+  register: rke2_found_snapshots
 
-- name: TRANSFERENCIA - Validar que existan snapshots en el nodo Master
+- name: TRANSFERENCIA - Validar que existan snapshots de RKE2 en el control plane
   ansible.builtin.fail:
-    msg: "No se encontraron archivos de backup (*.db.gz) en el directorio {{ etcd_local_backup_dir }} del nodo Master."
-  when: etcd_snapshot_gz is not defined and (local_found_snapshots.files is not defined or local_found_snapshots.files | length == 0)
+    msg: "No se encontraron snapshots de etcd en la ruta oficial de RKE2 ({{ rke2_snapshot_dir }}) en {{ inventory_hostname }}."
+  when: rke2_found_snapshots.files is not defined or rke2_found_snapshots.files | length == 0
 
-- name: TRANSFERENCIA - Establecer ruta del snapshot más reciente encontrado
+- name: TRANSFERENCIA - Establecer la ruta del snapshot RKE2 más reciente
   ansible.builtin.set_fact:
-    etcd_snapshot_gz: "{{ (local_found_snapshots.files | sort(attribute='mtime', reverse=true) | first).path }}"
-  when: etcd_snapshot_gz is not defined
+    etcd_snapshot_src: "{{ (rke2_found_snapshots.files | sort(attribute='mtime', reverse=true) | first).path }}"
+
+- name: TRANSFERENCIA - Informar el snapshot seleccionado en cada control plane
+  ansible.builtin.debug:
+    msg: "Snapshot seleccionado en {{ inventory_hostname }}: {{ etcd_snapshot_src | basename }}"
 
 # ==============================================================================
 # MODO 1: Mediante la Máquina Controladora (Controller-Mediated Transfer)
+# Los control planes y los servidores de storage no requieren conectividad directa.
 # ==============================================================================
 - name: TRANSFERENCIA [Modo Controlador] - Descargar snapshot al host Ansible controlador
   ansible.builtin.fetch:
-    src: "{{ etcd_snapshot_gz }}"
+    src: "{{ etcd_snapshot_src }}"
     dest: "/tmp/ansible-etcd-backups/{{ inventory_hostname }}/"
     flat: true
   when: etcd_transfer_mode == 'controller_mediated'
 
 - name: TRANSFERENCIA [Modo Controlador] - Subir snapshot a los servidores de backup
   ansible.builtin.copy:
-    src: "/tmp/ansible-etcd-backups/{{ inventory_hostname }}/{{ etcd_snapshot_gz | basename }}"
-    dest: "{{ etcd_backup_server_dir }}/{{ inventory_hostname }}-{{ etcd_snapshot_gz | basename }}"
+    src: "/tmp/ansible-etcd-backups/{{ inventory_hostname }}/{{ etcd_snapshot_src | basename }}"
+    dest: "{{ etcd_backup_server_dir }}/{{ inventory_hostname }}-{{ etcd_snapshot_src | basename }}"
     mode: '0600'
     owner: "{{ ansible_user }}"
   delegate_to: "{{ item }}"
@@ -62,11 +70,11 @@
   run_once: true
   when: etcd_transfer_mode == 'controller_mediated'
 
-
 # ==============================================================================
 # MODO 2: Sincronización Directa de Servidor a Servidor (Rsync sobre SSH)
+# Requiere conectividad de red directa y claves SSH entre masters y storage.
 # ==============================================================================
-- name: TRANSFERENCIA [Modo Rsync Directo] - Validar existencia de rsync local y remoto
+- name: TRANSFERENCIA [Modo Rsync Directo] - Asegurar que rsync está instalado
   ansible.builtin.package:
     name: rsync
     state: present
@@ -74,19 +82,10 @@
 
 - name: TRANSFERENCIA [Modo Rsync Directo] - Sincronizar archivo directamente al Storage de Backup
   ansible.posix.synchronize:
-    src: "{{ etcd_snapshot_gz }}"
-    dest: "{{ etcd_backup_server_dir }}/{{ inventory_hostname }}-{{ etcd_snapshot_gz | basename }}"
+    src: "{{ etcd_snapshot_src }}"
+    dest: "{{ etcd_backup_server_dir }}/{{ inventory_hostname }}-{{ etcd_snapshot_src | basename }}"
     mode: push
     use_ssh_args: true
   delegate_to: "{{ inventory_hostname }}"
   loop: "{{ groups['backup_servers'] }}"
   when: etcd_transfer_mode == 'direct_rsync'
-
-# ==============================================================================
-# LIMPIEZA: Eliminar snapshot comprimido de tránsito en el Master
-# ==============================================================================
-- name: TRANSFERENCIA - Eliminar archivo comprimido temporal de tránsito en el Master
-  ansible.builtin.file:
-    path: "{{ etcd_snapshot_gz }}"
-    state: absent
-

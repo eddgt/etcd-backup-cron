@@ -5,7 +5,7 @@
 - name: STORAGE - Buscar snapshots de {{ inventory_hostname }} en {{ backup_server }}
   ansible.builtin.find:
     paths: "{{ etcd_backup_server_dir }}"
-    patterns: "{{ inventory_hostname }}-etcd-snapshot-*.db.gz"
+    patterns: "{{ inventory_hostname }}-etcd-snapshot-*"
   register: current_remote_snapshots
   delegate_to: "{{ backup_server }}"
 

@@ -6,7 +6,9 @@ Este proyecto implementa una arquitectura moderna, escalable y mantenible para l
 
 ## 🏛️ Arquitectura del Sistema
 
-El flujo de copia de seguridad está diseñado para ser seguro y eficiente, utilizando **`rsync`** (encapsulado en Ansible) y ofreciendo dos topologías de red según la conectividad de tu infraestructura.
+RKE2 ya genera de forma **nativa y automática** snapshots de `etcd` en cada control plane. Este proyecto **no crea snapshots**: simplemente toma el snapshot más reciente que RKE2 ya produjo en cada master y lo **copia tal cual (raw, sin comprimir)** hacia los servidores de backup, sin tocar ni eliminar el original gestionado por RKE2. La restauración posterior se realiza con cualquiera de esas copias.
+
+Ofrece dos topologías de red según la conectividad de tu infraestructura.
 
 ### Flujo de Backup (Modo Mediado por Controlador)
 En este modo (por defecto), los nodos master y de almacenamiento no requieren conexión directa entre sí, ya que el orquestador de Ansible actúa como puente seguro.
@@ -16,15 +18,13 @@ sequenceDiagram
     participant Ansible as Ansible Controller (Localhost)
     participant Master as K8s Master Node (RKE2)
     participant Storage as Backup Storage Server
-    
+
     Ansible->>Master: 1. Inicia Tareas de Backup
-    Master->>Master: 2. Localiza snapshot de RKE2 más reciente
-    Master->>Master: 3. Copia y comprime temporalmente (.db.gz)
-    Ansible->>Master: 4. Descarga temporal vía FETCH
-    Master-->>Ansible: Envía archivo comprimido (.db.gz)
-    Ansible->>Storage: 5. Sube copia mediante COPY/rsync
-    Ansible->>Master: 6. Elimina copia comprimida de tránsito
-    Ansible->>Storage: 7. Limpia archivos antiguos en Storage (Retiene las últimas N copias)
+    Master->>Master: 2. Localiza el snapshot RKE2 más reciente (sin modificarlo)
+    Ansible->>Master: 3. Descarga el snapshot vía FETCH
+    Master-->>Ansible: Envía el snapshot raw (.db)
+    Ansible->>Storage: 4. Sube la copia mediante COPY (prefijada con el nombre del master)
+    Ansible->>Storage: 5. Limpia archivos antiguos en Storage (Retiene las últimas N copias)
 ```
 
 ---
@@ -38,35 +38,44 @@ El proyecto sigue las mejores prácticas de Ansible. Los archivos principales so
 - **`inventories/production/group_vars/all.yml`**: Centraliza todas las variables de configuración.
 
 ### Variables Principales (`group_vars/all.yml`)
+- `rke2_snapshot_dir`: Directorio donde RKE2 guarda sus snapshots automáticos (defecto: `/var/lib/rancher/rke2/server/db/snapshots`). Es el **origen** de las copias.
 - `etcd_transfer_mode`: `"controller_mediated"` (recomendado para redes segmentadas) o `"direct_rsync"`.
-- `rke2_snapshot_dir`: Directorio donde RKE2 guarda sus snapshots automáticos (defecto: `/var/lib/rancher/rke2/server/db/snapshots`).
-- `etcd_backup_server_retention_count`: Cantidad de copias de seguridad de etcd a retener en los servidores de backup por cada master (defecto: `3`).
-  * *Nota: La retención de las últimas 3 copias en el origen (nodos master) la gestiona el motor interno de RKE2 de forma automática.*
-- `etcd_backup_timer_calendar`: Programación en formato systemd timer (defecto: `"*-*-* 04:00:00"` - cada 4 horas).
+- `etcd_backup_server_dir`: Directorio destino en los servidores de backup (defecto: `/srv/backup/kubernetes/etcd`).
+- `etcd_backup_server_retention_count`: Cantidad de copias de etcd a retener en los servidores de backup por cada master (defecto: `3`).
+  * *Nota: La retención en el origen (control planes) la gestiona el propio motor de RKE2 de forma automática.*
+
+> Cada copia se guarda en el storage con el nombre del master como prefijo, p. ej. `k8s-master-01.infra.local-etcd-snapshot-k8s-master-01-1700000000`, para no colisionar entre control planes.
 
 ---
 
 ## 🚀 Guía de Uso
 
 ### 1. Ejecución Manual del Backup
-Para forzar una copia de seguridad inmediata en todos los servidores de la infraestructura:
+Para forzar una copia inmediata (transferencia + retención) de todos los control planes:
 
 ```bash
-ansible-playbook site.yml
+ansible-playbook site.yml --tags backup_run
 ```
 
-### 2. Configurar la Automatización Periódica (Systemd Timer)
-El playbook instala de forma nativa un temporizador de Systemd en los nodos maestros de K8s. Corre de forma persistente y escribe logs limpios en `journald`.
-Para instalar/actualizar la programación periódica ejecutando solo esa sección del playbook:
+Tags disponibles:
+- `backup_transfer`: solo copia el snapshot RKE2 más reciente al storage.
+- `backup_prune`: solo aplica la política de retención en el storage.
+- `backup_run`: ejecuta ambas (recomendado).
+
+### 2. Configurar la Automatización Periódica (Cron en el Controlador)
+La programación vive en el **controlador Ansible** (no en los masters). Se incluye un wrapper con logging y bloqueo anti-solapamiento en [`scripts/etcd-backup-cron.sh`](scripts/etcd-backup-cron.sh).
 
 ```bash
-ansible-playbook site.yml --tags backup_schedule
+# En el controlador, como el usuario que posee las claves SSH:
+crontab -e
+
+# Ejemplo: cada 4 horas, en el minuto 0
+0 */4 * * *  /ruta/al/repo/scripts/etcd-backup-cron.sh >> /var/log/etcd-backup.log 2>&1
 ```
 
-Para validar el estado de los temporizadores directamente en los nodos maestros:
+Para validar la última ejecución:
 ```bash
-systemctl status etcd-backup.timer
-journalctl -u etcd-backup.service -f
+tail -f /var/log/etcd-backup.log
 ```
 
 ---
@@ -82,13 +91,13 @@ Ofrecemos dos alternativas para realizar la restauración: **Método Automatizad
 
 ### Opción A: Restauración Automatizada (Recomendada) 🤖
 
-El rol `etcd_restore` automatiza completamente la detención de servicios, la rotación segura de directorios corruptos, la restauración de datos mediante `rsync` y el reinicio del plano de control, reduciendo al mínimo el error humano. 
+El rol `etcd_restore` ejecuta el procedimiento oficial de RKE2 para clústeres HA: detiene `rke2-server` en todos los control planes, restaura el snapshot en un nodo primario con `rke2 server --cluster-reset`, lo reinicia y reincorpora al resto de masters borrando su `db/etcd`.
 
 El sistema admite dos orígenes de backups (`etcd_restore_source`):
 *   `backup_server` (Por defecto): Servidor de almacenamiento centralizado remoto.
 *   `controller`: Directorio local en el host controlador de Ansible (por defecto en `backups/`).
 
-Además, si no se provee un nombre de archivo, el playbook **identificará y restaurará automáticamente el snapshot más reciente** (`*.db.gz`).
+Además, si no se provee un nombre de archivo, el playbook **identificará y restaurará automáticamente el snapshot más reciente**. El nodo primario es, por defecto, el primer host de `control_planes`; puedes cambiarlo con `-e "etcd_restore_primary=k8s-master-02.infra.local"`.
 
 #### Paso 1: Ejecutar el Playbook de Restauración
 
@@ -104,7 +113,7 @@ ansible-playbook restore.yml
 
 ##### Caso 2: Restaurar un snapshot específico desde el Storage Remoto
 ```bash
-ansible-playbook restore.yml -e "etcd_restore_file_path=k8s-master-01-etcd-snapshot-20260601_120000.db.gz"
+ansible-playbook restore.yml -e "etcd_restore_file_path=k8s-master-01.infra.local-etcd-snapshot-k8s-master-01-1700000000"
 ```
 
 ##### Caso 3: Restaurar el snapshot más reciente ubicado en el host de Ansible (directorio local `backups/`)
@@ -114,18 +123,18 @@ ansible-playbook restore.yml -e "etcd_restore_source=controller"
 
 ##### Caso 4: Restaurar un snapshot local específico pasándole la ruta absoluta o relativa
 ```bash
-ansible-playbook restore.yml -e "etcd_restore_source=controller etcd_restore_file_path=/mi/ruta/custom-snapshot.db.gz"
+ansible-playbook restore.yml -e "etcd_restore_source=controller etcd_restore_file_path=/mi/ruta/etcd-snapshot-xxxxxx"
 ```
 
 ---
 
 #### ¿Qué hace el sistema de forma autónoma?
-1. **Localiza y prepara el backup:** Encuentra el snapshot (el más nuevo o el especificado) en la fuente elegida (controlador o storage) y lo traslada vía **`rsync`** de manera segura al master.
-2. **Aísla el plano de control:** Detiene temporalmente `kube-apiserver` y `etcd` moviendo los manifiestos de `/etc/kubernetes/manifests` para evitar corrupciones.
-3. **Respaldo preventivo:** Renombra el directorio `/var/lib/etcd` corrupto a `/var/lib/etcd-old-TIMESTAMP` para permitir rollbacks.
-4. **Bootstrap & Restore:** Ejecuta la restauración inyectando metadatos para inicializarlo como un miembro único sano.
-5. **Permisos de seguridad:** Ajusta la propiedad a `root:root` y permisos a `700`.
-6. **Reactivación:** Devuelve los manifiestos de Kubernetes y valida la salud del clúster (`kubectl get nodes`).
+1. **Localiza el backup:** Encuentra el snapshot (el más nuevo o el especificado) en la fuente elegida (controlador o storage) y lo copia al directorio de snapshots del nodo primario.
+2. **Detiene el clúster:** Para `rke2-server` en todos los control planes (y ejecuta `rke2-killall.sh` si está disponible) para liberar etcd de forma limpia.
+3. **Cluster-reset:** En el nodo primario ejecuta `rke2 server --cluster-reset --cluster-reset-restore-path=<snapshot>`, reinicializando etcd como un miembro único sano a partir del snapshot.
+4. **Reinicio del primario:** Arranca `rke2-server` en el primario y espera a que la API responda (`/readyz`).
+5. **Reincorporación HA:** En el resto de control planes borra `db/etcd` y reinicia `rke2-server` para que se reincorporen al clúster restaurado.
+6. **Validación:** Espera a que la API responda y muestra el estado de los nodos (`kubectl get nodes`).
 
 ---
 
@@ -140,22 +149,23 @@ Accede por SSH al nodo maestro afectado como `root` y detén el servicio para su
 systemctl stop rke2-server.service
 ```
 
-#### Paso 2: Localizar y Descomprimir el Snapshot
-Localiza el archivo de backup en formato `.db.gz` que deseas restaurar (por ejemplo, subido manualmente a `/var/lib/etcd-backups/`).
-Descompímelo directamente en el directorio de snapshots de RKE2:
+#### Paso 2: Colocar el Snapshot
+Copia el archivo de backup raw (tal como quedó en el storage, sin comprimir) al directorio de snapshots de RKE2 en el nodo maestro:
 
 ```bash
-gunzip -c /var/lib/etcd-backups/etcd-snapshot-xxxxxx.db.gz > /var/lib/rancher/rke2/server/db/snapshots/rke2-restore-snapshot
+cp /ruta/al/backup/k8s-master-01.infra.local-etcd-snapshot-xxxxxx /var/lib/rancher/rke2/server/db/snapshots/rke2-restore-snapshot
 ```
 
 #### Paso 3: Ejecutar el Reset de Clúster de RKE2
-Ejecuta el binario de RKE2 con el comando `--cluster-reset` apuntando al snapshot descomprimido. Esto inicializa etcd como un miembro único sano y regenera los tokens internos:
+Ejecuta el binario de RKE2 con `--cluster-reset` apuntando al snapshot. Esto inicializa etcd como un miembro único sano y regenera los tokens internos:
 
 ```bash
-rke2 server --cluster-reset --etcd-snapshot=/var/lib/rancher/rke2/server/db/snapshots/rke2-restore-snapshot
+rke2 server --cluster-reset --cluster-reset-restore-path=/var/lib/rancher/rke2/server/db/snapshots/rke2-restore-snapshot
 ```
 
-*Nota: Una vez finalizado el comando de reset, verás logs que confirman que el clúster se restableció satisfactoriamente.*
+*Nota: Una vez finalizado el comando de reset, verás logs que confirman que el clúster se restableció satisfactoriamente. Inícialo de nuevo (Paso 4) sin el flag `--cluster-reset`.*
+
+> En un clúster HA, tras restaurar y reiniciar este primer nodo, en **cada uno de los demás masters** ejecuta: `systemctl stop rke2-server && rm -rf /var/lib/rancher/rke2/server/db/etcd && systemctl start rke2-server` para que se reincorporen.
 
 #### Paso 4: Iniciar el Servicio RKE2 Server
 Inicia nuevamente el plano de control:
