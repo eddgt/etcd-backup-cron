@@ -2,6 +2,18 @@
 # roles/etcd_backup/tasks/transfer.yml
 
 # ==============================================================================
+# PREPARACIÓN: Asegurar directorios de destino
+# ==============================================================================
+- name: TRANSFERENCIA - Asegurar que existe el directorio de destino en los Servidores de Storage
+  ansible.builtin.file:
+    path: "{{ etcd_backup_server_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['backup_servers'] }}"
+  run_once: true
+
+# ==============================================================================
 # MODO 1: Mediante la Máquina Controladora (Controller-Mediated Transfer)
 # ==============================================================================
 - name: TRANSFERENCIA [Modo Controlador] - Descargar snapshot al host Ansible controlador
