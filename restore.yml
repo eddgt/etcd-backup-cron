@@ -1,0 +1,19 @@
+---
+# restore.yml - Playbook de Recuperación ante Desastres (DR) para etcd
+- name: RESTAURACIÓN DE EMERGENCIA DE ETCD (DESASTRE)
+  hosts: control_planes
+  become: true
+  gather_facts: true
+  vars_prompt:
+    - name: confirm_dr_restore
+      prompt: "¡ATENCIÓN! Está a punto de iniciar una restauración destructiva de etcd. Escriba 'CONFIRMAR' para continuar"
+      private: false
+  pre_tasks:
+    - name: Validar confirmación explícita
+      ansible.builtin.fail:
+        msg: "Ejecución abortada. Debe escribir exactamente 'CONFIRMAR' para continuar."
+      when: confirm_dr_restore | trim != 'CONFIRMAR'
+
+  roles:
+    - role: etcd_restore
+      tags: [restore]

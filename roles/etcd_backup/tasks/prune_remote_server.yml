@@ -1,0 +1,18 @@
+---
+# roles/etcd_backup/tasks/prune_remote_server.yml
+# Limpia backups excedentes para el master actual en un servidor de backup específico
+
+- name: STORAGE - Buscar snapshots de {{ inventory_hostname }} en {{ backup_server }}
+  ansible.builtin.find:
+    paths: "{{ etcd_backup_server_dir }}"
+    patterns: "{{ inventory_hostname }}-etcd-snapshot-*.db.gz"
+  register: current_remote_snapshots
+  delegate_to: "{{ backup_server }}"
+
+- name: STORAGE - Eliminar backups excedentes en {{ backup_server }} (Manteniendo los últimos {{ etcd_backup_server_retention_count }})
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  delegate_to: "{{ backup_server }}"
+  loop: "{{ (current_remote_snapshots.files | sort(attribute='mtime', reverse=true))[etcd_backup_server_retention_count | int:] }}"
+  when: current_remote_snapshots.files is defined and current_remote_snapshots.files | length > etcd_backup_server_retention_count | int

@@ -1,0 +1,14 @@
+[Unit]
+Description=Temporizador de Copias de Seguridad de etcd K8s
+RefuseManualStart=no
+RefuseManualStop=no
+
+[Timer]
+# Frecuencia configurable desde las variables de Ansible
+OnCalendar={{ etcd_backup_timer_calendar }}
+# Tolerancia de tiempo para evitar picos de ejecución simultánea en varios nodos
+AccuracySec={{ etcd_backup_timer_accuracy }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

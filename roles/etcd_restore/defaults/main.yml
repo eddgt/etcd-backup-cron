@@ -1,0 +1,26 @@
+---
+# roles/etcd_restore/defaults/main.yml
+# Valores por defecto para el rol de restauración de etcd
+
+etcd_client_port: 2379
+etcd_cert_dir: "/etc/kubernetes/pki/etcd"
+etcd_ca_cert: "{{ etcd_cert_dir }}/ca.crt"
+etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
+etcd_client_key: "{{ etcd_cert_dir }}/server.key"
+
+etcd_local_backup_dir: "/var/lib/etcd-backups"
+etcd_data_dir: "/var/lib/etcd"
+
+# --- Configuración de la Restauración Dinámica ---
+# Origen del snapshot a restaurar:
+# - 'backup_server': Descarga el snapshot desde el servidor de storage central.
+# - 'controller': Utiliza un snapshot ubicado localmente en el host controlador de Ansible.
+etcd_restore_source: "backup_server"
+
+# Directorio local en el host controlador de Ansible donde se guardan los backups (cuando etcd_restore_source == 'controller')
+etcd_restore_local_path: "{{ playbook_dir }}/backups"
+
+# Nombre o ruta del archivo de snapshot a restaurar.
+# Si se deja vacío (""), el playbook buscará automáticamente el snapshot más reciente (*.db.gz) en el origen seleccionado.
+etcd_restore_file_path: ""
+

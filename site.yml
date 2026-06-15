@@ -1,0 +1,9 @@
+---
+# site.yml - Playbook principal de Backup de etcd K8s
+- name: Orquestación de Copias de Seguridad de etcd
+  hosts: control_planes
+  become: true
+  gather_facts: true
+  roles:
+    - role: etcd_backup
+      tags: [backup]

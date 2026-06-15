@@ -1,0 +1,51 @@
+---
+# roles/etcd_backup/tasks/transfer.yml
+
+# ==============================================================================
+# MODO 1: Mediante la Máquina Controladora (Controller-Mediated Transfer)
+# ==============================================================================
+- name: TRANSFERENCIA [Modo Controlador] - Descargar snapshot al host Ansible controlador
+  ansible.builtin.fetch:
+    src: "{{ etcd_snapshot_gz }}"
+    dest: "/tmp/ansible-etcd-backups/{{ inventory_hostname }}/"
+    flat: true
+  when: etcd_transfer_mode == 'controller_mediated'
+
+- name: TRANSFERENCIA [Modo Controlador] - Subir snapshot a los servidores de backup
+  ansible.builtin.copy:
+    src: "/tmp/ansible-etcd-backups/{{ inventory_hostname }}/{{ etcd_snapshot_gz | basename }}"
+    dest: "{{ etcd_backup_server_dir }}/{{ inventory_hostname }}-{{ etcd_snapshot_gz | basename }}"
+    mode: '0600'
+    owner: "{{ ansible_user }}"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['backup_servers'] }}"
+  when: etcd_transfer_mode == 'controller_mediated'
+
+- name: TRANSFERENCIA [Modo Controlador] - Limpiar archivos temporales del host Ansible controlador
+  ansible.builtin.file:
+    path: "/tmp/ansible-etcd-backups"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: etcd_transfer_mode == 'controller_mediated'
+
+
+# ==============================================================================
+# MODO 2: Sincronización Directa de Servidor a Servidor (Rsync sobre SSH)
+# ==============================================================================
+- name: TRANSFERENCIA [Modo Rsync Directo] - Validar existencia de rsync local y remoto
+  ansible.builtin.package:
+    name: rsync
+    state: present
+  when: etcd_transfer_mode == 'direct_rsync'
+
+- name: TRANSFERENCIA [Modo Rsync Directo] - Sincronizar archivo directamente al Storage de Backup
+  ansible.posix.synchronize:
+    src: "{{ etcd_snapshot_gz }}"
+    dest: "{{ etcd_backup_server_dir }}/{{ inventory_hostname }}-{{ etcd_snapshot_gz | basename }}"
+    mode: push
+    use_ssh_args: true
+  delegate_to: "{{ inventory_hostname }}"
+  loop: "{{ groups['backup_servers'] }}"
+  when: etcd_transfer_mode == 'direct_rsync'

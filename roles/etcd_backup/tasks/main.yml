@@ -1,0 +1,19 @@
+---
+# roles/etcd_backup/tasks/main.yml
+# Orquestador del Rol de Backup de etcd K8s
+
+- name: 🚀 FASE 1: Generación del Snapshot Local en el Master
+  ansible.builtin.import_tasks: backup.yml
+  tags: [backup_run, backup_generate]
+
+- name: 📂 FASE 2: Transferencia Segura a los Servidores de Backup
+  ansible.builtin.import_tasks: transfer.yml
+  tags: [backup_run, backup_transfer]
+
+- name: 🧹 FASE 3: Aplicación de la Política de Retención (Pruning)
+  ansible.builtin.import_tasks: prune.yml
+  tags: [backup_run, backup_prune]
+
+- name: ⏰ FASE 4: Configuración de la Programación Periódica Local
+  ansible.builtin.import_tasks: schedule.yml
+  tags: [backup_schedule]

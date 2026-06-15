@@ -1,0 +1,11 @@
+---
+# roles/etcd_backup/tasks/prune.yml
+# Orquestación de la política de retención en el destino (servidores de backup)
+# Nota: La limpieza en el origen (nodos master) la gestiona el motor interno de K8s, manteniendo las últimas 3 copias.
+
+- name: STORAGE - Limpiar backups excedentes para {{ inventory_hostname }} en cada servidor de backup
+  ansible.builtin.include_tasks: prune_remote_server.yml
+  loop: "{{ groups['backup_servers'] }}"
+  loop_control:
+    loop_var: backup_server
+

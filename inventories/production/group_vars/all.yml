@@ -1,0 +1,37 @@
+---
+# inventories/production/group_vars/all.yml
+
+# --- Configuración General de Conexión ---
+ansible_user: devops
+ansible_ssh_private_key_file: "~/.ssh/id_rsa"
+
+# --- Configuración del Backup de etcd ---
+# Puerto por defecto y certificados TLS de etcd
+etcd_client_port: 2379
+etcd_cert_dir: "/etc/kubernetes/pki/etcd"
+etcd_ca_cert: "{{ etcd_cert_dir }}/ca.crt"
+etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
+etcd_client_key: "{{ etcd_cert_dir }}/server.key"
+
+# Directorio temporal local en el nodo Master de K8s para guardar el snapshot inicial
+etcd_local_backup_dir: "/var/lib/etcd-backups"
+
+# --- Configuración del Destino y Transferencia ---
+# Método de transferencia:
+# - 'controller_mediated': El nodo controlador (donde corre Ansible) descarga el backup y luego lo sube a los backup_servers (Excelente para redes segmentadas).
+# - 'direct_rsync': Los K8s masters hacen rsync directo a los backup_servers (Requiere conectividad de red directa y SSH keys configuradas entre ellos).
+etcd_transfer_mode: "controller_mediated"
+
+# Directorio final de almacenamiento en los servidores de backup
+etcd_backup_server_dir: "/srv/backup/kubernetes/etcd"
+
+# --- Políticas de Retención ---
+# Cantidad de copias de seguridad de etcd a retener en los servidores de backup
+# (En el origen/nodos master, el motor interno de Kubernetes gestiona y mantiene las últimas 3 copias)
+etcd_backup_server_retention_count: 3
+
+# --- Automatización Periódica ---
+# Configuración del temporizador Systemd en el Master
+etcd_backup_cron_hour: "0"       # Si usas cron: Medianoche
+etcd_backup_cron_minute: "0"
+etcd_backup_timer_calendar: "*-*-* 04:00:00"  # Systemd Timer: Cada 4 horas

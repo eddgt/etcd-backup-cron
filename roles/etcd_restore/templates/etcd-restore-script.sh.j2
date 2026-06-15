@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Script de Restauración de Emergencia de etcd - Generado por Ansible
+# ==============================================================================
+set -euo pipefail
+
+BACKUP_FILE="${1:-}"
+ETCD_DATA_DIR="{{ etcd_data_dir }}"
+MANIFESTS_DIR="/etc/kubernetes/manifests"
+TEMP_MANIFESTS_DIR="/tmp/k8s-manifests-backup"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [etcd-restore] $*"
+}
+
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [etcd-restore] [ERROR] $*" >&2
+}
+
+if [[ -z "${BACKUP_FILE}" ]]; then
+    error "Uso: $0 <ruta-al-snapshot-etcd.db.gz o .db>"
+    exit 1
+fi
+
+if [[ ! -f "${BACKUP_FILE}" ]]; then
+    error "El archivo de backup no existe: ${BACKUP_FILE}"
+    exit 1
+fi
+
+log "Iniciando recuperación ante desastres con el archivo: ${BACKUP_FILE}"
+
+# 1. Crear respaldo del archivo original si está comprimido y descomprimirlo
+RESTORE_DB="/tmp/etcd-restore-${TIMESTAMP}.db"
+if [[ "${BACKUP_FILE}" == *.gz ]]; then
+    log "Descomprimiendo backup a ruta temporal..."
+    gunzip -c "${BACKUP_FILE}" > "${RESTORE_DB}"
+else
+    cp "${BACKUP_FILE}" "${RESTORE_DB}"
+fi
+
+# 2. Detener componentes de Kubernetes (kube-apiserver y etcd)
+log "Paso 1: Deteniendo kube-apiserver y etcd moviendo los manifiestos estáticos..."
+mkdir -p "${TEMP_MANIFESTS_DIR}"
+
+for manifest in "kube-apiserver.yaml" "etcd.yaml"; do
+    if [[ -f "${MANIFESTS_DIR}/${manifest}" ]]; then
+        log "Moviendo ${manifest} fuera de la ruta de Kubelet..."
+        mv "${MANIFESTS_DIR}/${manifest}" "${TEMP_MANIFESTS_DIR}/${manifest}"
+    fi
+done
+
+log "Esperando 15 segundos a que Kubelet detenga los contenedores..."
+sleep 15
+
+# 3. Respaldo de seguridad del directorio de datos corrupto/actual
+if [[ -d "${ETCD_DATA_DIR}" ]]; then
+    BACKUP_DATA_DIR="${ETCD_DATA_DIR}-old-${TIMESTAMP}"
+    log "Paso 2: Respaldando el directorio de datos actual a ${BACKUP_DATA_DIR}..."
+    mv "${ETCD_DATA_DIR}" "${BACKUP_DATA_DIR}"
+fi
+
+# 4. Restauración con etcdctl
+log "Paso 3: Restaurando snapshot de etcd..."
+export ETCDCTL_API=3
+
+# Obtener nombre del host y variables para auto-bootstrap
+NODE_NAME=$(hostname)
+INITIAL_ADVERTISE_PEER_URLS="https://127.0.0.1:2380" # Ajustable para entornos multi-master
+
+if etcdctl snapshot restore "${RESTORE_DB}" \
+  --name="${NODE_NAME}" \
+  --data-dir="${ETCD_DATA_DIR}" \
+  --initial-cluster="${NODE_NAME}=${INITIAL_ADVERTISE_PEER_URLS}" \
+  --initial-advertise-peer-urls="${INITIAL_ADVERTISE_PEER_URLS}"; then
+    
+    log "Snapshot restaurado con éxito."
+    
+    # 5. Ajustar permisos
+    log "Ajustando permisos del nuevo directorio de etcd..."
+    chown -R root:root "${ETCD_DATA_DIR}" # En kubeadm, etcd corre como root
+    chmod -R 700 "${ETCD_DATA_DIR}"
+    
+    # 6. Reiniciar pods estáticos devolviendo los manifiestos
+    log "Paso 4: Reiniciando pods estáticos (kube-apiserver y etcd)..."
+    for manifest in "etcd.yaml" "kube-apiserver.yaml"; do
+        if [[ -f "${TEMP_MANIFESTS_DIR}/${manifest}" ]]; then
+            mv "${TEMP_MANIFESTS_DIR}/${manifest}" "${MANIFESTS_DIR}/${manifest}"
+        fi
+    done
+    
+    log "Esperando 20 segundos a que los servicios se reinicien..."
+    sleep 20
+    
+    # 7. Limpieza temporal
+    rm -f "${RESTORE_DB}"
+    rm -rf "${TEMP_MANIFESTS_DIR}"
+    
+    log "🎉 ¡PROCESO DE RESTAURACIÓN COMPLETADO CON ÉXITO!"
+    log "Valida la salud del clúster ejecutando: 'kubectl get nodes' y 'kubectl get pods -n kube-system'"
+    
+else
+    error "Fallo crítico al restaurar el snapshot."
+    log "Intentando revertir manifiestos para estabilidad de emergencia..."
+    for manifest in "etcd.yaml" "kube-apiserver.yaml"; do
+        if [[ -f "${TEMP_MANIFESTS_DIR}/${manifest}" ]]; then
+            mv "${TEMP_MANIFESTS_DIR}/${manifest}" "${MANIFESTS_DIR}/${manifest}"
+        fi
+    done
+    exit 3
+fi

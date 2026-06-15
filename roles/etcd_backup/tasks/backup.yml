@@ -1,0 +1,68 @@
+---
+# roles/etcd_backup/tasks/backup.yml
+
+- name: Validar que el directorio de backup local exista en el K8s Master
+  ansible.builtin.file:
+    path: "{{ etcd_local_backup_dir }}"
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+
+- name: Definir el nombre del archivo del snapshot
+  ansible.builtin.set_fact:
+    etcd_snapshot_time: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+- name: Establecer nombres de archivos de backup
+  ansible.builtin.set_fact:
+    etcd_snapshot_db: "{{ etcd_local_backup_dir }}/etcd-snapshot-{{ etcd_snapshot_time }}.db"
+    etcd_snapshot_gz: "{{ etcd_local_backup_dir }}/etcd-snapshot-{{ etcd_snapshot_time }}.db.gz"
+
+- name: Validar existencia de certificados TLS de etcd
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: etcd_certs_stat
+  loop:
+    - "{{ etcd_ca_cert }}"
+    - "{{ etcd_client_cert }}"
+    - "{{ etcd_client_key }}"
+
+- name: Falla si falta algún certificado TLS
+  ansible.builtin.fail:
+    msg: "Error: No se encontró el certificado de etcd en la ruta: {{ item.item }}"
+  when: not item.stat.exists
+  loop: "{{ etcd_certs_stat.results }}"
+
+- name: Ejecutar etcdctl para generar snapshot de etcd
+  ansible.builtin.shell: |
+    export ETCDCTL_API=3
+    etcdctl \
+      --endpoints="https://127.0.0.1:{{ etcd_client_port }}" \
+      --cacert="{{ etcd_ca_cert }}" \
+      --cert="{{ etcd_client_cert }}" \
+      --key="{{ etcd_client_key }}" \
+      snapshot save "{{ etcd_snapshot_db }}"
+  environment:
+    ETCDCTL_API: "3"
+  changed_when: true
+  register: etcdctl_output
+
+- name: Mostrar resultado de etcdctl
+  ansible.builtin.debug:
+    var: etcdctl_output.stdout_lines
+
+- name: Comprimir el Snapshot generado (Gzip)
+  community.general.archive:
+    path: "{{ etcd_snapshot_db }}"
+    dest: "{{ etcd_snapshot_gz }}"
+    format: gz
+    remove: true # Eliminar el archivo original sin comprimir para ahorrar espacio
+
+- name: Obtener estadísticas del archivo comprimido
+  ansible.builtin.stat:
+    path: "{{ etcd_snapshot_gz }}"
+  register: snapshot_gz_stat
+
+- name: Informar tamaño del backup generado
+  ansible.builtin.debug:
+    msg: "Backup generado exitosamente en {{ etcd_snapshot_gz }}. Tamaño comprimido: {{ (snapshot_gz_stat.stat.size / 1024 / 1024) | round(2) }} MB"

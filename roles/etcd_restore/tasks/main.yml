@@ -1,0 +1,180 @@
+---
+# roles/etcd_restore/tasks/main.yml
+# Tareas de restauración ante desastres para etcd
+
+# ==============================================================================
+# FASE 1: Búsqueda y Preparación del Archivo de Backup
+# ==============================================================================
+
+# Preparar directorio temporal local en el controlador para descargas si es necesario
+- name: RECUPERACIÓN - Crear directorio temporal en host Ansible controlador
+  ansible.builtin.file:
+    path: "/tmp/ansible-etcd-restore"
+    state: directory
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: etcd_restore_source == 'backup_server'
+
+# --- FLUJO A: Origen en Servidor de Backup Remoto ---
+- name: STORAGE - Buscar archivos de backup en el servidor de storage
+  ansible.builtin.find:
+    paths: "{{ etcd_backup_server_dir }}"
+    patterns: "*.db.gz"
+  register: remote_snapshots
+  delegate_to: "{{ groups['backup_servers'][0] }}"
+  run_once: true
+  when: etcd_restore_source == 'backup_server' and etcd_restore_file_path == ""
+
+- name: STORAGE - Validar que existan backups en el servidor de storage
+  ansible.builtin.fail:
+    msg: "No se encontraron archivos de backup (*.db.gz) en el directorio {{ etcd_backup_server_dir }} del servidor de storage."
+  when: >
+    etcd_restore_source == 'backup_server' and 
+    etcd_restore_file_path == "" and 
+    (remote_snapshots.files is not defined or remote_snapshots.files | length == 0)
+  run_once: true
+
+- name: STORAGE - Determinar el nombre del snapshot más reciente en el storage
+  ansible.builtin.set_fact:
+    selected_backup_filename: "{{ (remote_snapshots.files | sort(attribute='mtime', reverse=true) | first).path | basename }}"
+  run_once: true
+  when: etcd_restore_source == 'backup_server' and etcd_restore_file_path == ""
+
+- name: STORAGE - Establecer nombre de archivo específico provisto por el usuario
+  ansible.builtin.set_fact:
+    selected_backup_filename: "{{ etcd_restore_file_path | basename }}"
+  run_once: true
+  when: etcd_restore_source == 'backup_server' and etcd_restore_file_path != ""
+
+- name: STORAGE - Descargar el snapshot seleccionado al host controlador
+  ansible.builtin.fetch:
+    src: "{{ etcd_backup_server_dir }}/{{ selected_backup_filename }}"
+    dest: "/tmp/ansible-etcd-restore/restore-target.db.gz"
+    flat: true
+  delegate_to: "{{ groups['backup_servers'][0] }}"
+  run_once: true
+  when: etcd_restore_source == 'backup_server'
+
+- name: STORAGE - Registrar ruta local del snapshot descargado
+  ansible.builtin.set_fact:
+    local_snapshot_path: "/tmp/ansible-etcd-restore/restore-target.db.gz"
+  when: etcd_restore_source == 'backup_server'
+
+
+# --- FLUJO B: Origen en el Controlador Local (Ansible) ---
+- name: CONTROLADOR - Buscar archivos de backup en el directorio local
+  ansible.builtin.find:
+    paths: "{{ etcd_restore_local_path }}"
+    patterns: "*.db.gz"
+  register: local_snapshots
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: etcd_restore_source == 'controller' and etcd_restore_file_path == ""
+
+- name: CONTROLADOR - Validar que existan backups en el directorio local del controlador
+  ansible.builtin.fail:
+    msg: "No se encontraron archivos de backup (*.db.gz) en el directorio local {{ etcd_restore_local_path }}."
+  when: >
+    etcd_restore_source == 'controller' and 
+    etcd_restore_file_path == "" and 
+    (local_snapshots.files is not defined or local_snapshots.files | length == 0)
+  run_once: true
+
+- name: CONTROLADOR - Seleccionar el snapshot local más reciente
+  ansible.builtin.set_fact:
+    local_snapshot_path: "{{ (local_snapshots.files | sort(attribute='mtime', reverse=true) | first).path }}"
+  run_once: true
+  when: etcd_restore_source == 'controller' and etcd_restore_file_path == ""
+
+- name: CONTROLADOR - Validar existencia de archivo local específico
+  ansible.builtin.stat:
+    path: "{{ (etcd_restore_file_path is abs) | ternary(etcd_restore_file_path, etcd_restore_local_path ~ '/' ~ etcd_restore_file_path) }}"
+  register: local_specific_file_stat
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: etcd_restore_source == 'controller' and etcd_restore_file_path != ""
+
+- name: CONTROLADOR - Falla si el archivo local especificado no existe
+  ansible.builtin.fail:
+    msg: "El archivo de backup local especificado no existe: {{ local_specific_file_stat.stat.path }}"
+  when: >
+    etcd_restore_source == 'controller' and 
+    etcd_restore_file_path != "" and 
+    not local_specific_file_stat.stat.exists
+  run_once: true
+
+- name: CONTROLADOR - Registrar ruta del snapshot local específico
+  ansible.builtin.set_fact:
+    local_snapshot_path: "{{ local_specific_file_stat.stat.path }}"
+  when: etcd_restore_source == 'controller' and etcd_restore_file_path != ""
+
+
+# ==============================================================================
+# FASE 2: Transferencia Segura e Instalación del Script
+# ==============================================================================
+
+# Nos aseguramos de que el directorio de backups local existe en el master
+- name: RESTAURAR - Asegurar que el directorio de backups local existe en el Master
+  ansible.builtin.file:
+    path: "{{ etcd_local_backup_dir }}"
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+
+- name: RESTAURAR - Subir el archivo de Backup al Master afectado vía Rsync
+  ansible.posix.synchronize:
+    src: "{{ local_snapshot_path }}"
+    dest: "{{ etcd_local_backup_dir }}/restore-target.db.gz"
+    mode: push
+    rsync_path: "sudo rsync"
+
+- name: RESTAURAR - Instalar el script de restauración en el Master
+  ansible.builtin.template:
+    src: etcd-restore-script.sh.j2
+    dest: /usr/local/bin/etcd-restore.sh
+    mode: '0750'
+    owner: root
+    group: root
+
+- name: RESTAURAR - Ejecutar el Script Clínico de Recuperación ante Desastres
+  ansible.builtin.command:
+    cmd: "/usr/local/bin/etcd-restore.sh {{ etcd_local_backup_dir }}/restore-target.db.gz"
+  register: restore_execution_output
+  changed_when: true
+
+- name: RESTAURAR - Mostrar logs detallados de la recuperación
+  ansible.builtin.debug:
+    var: restore_execution_output.stdout_lines
+
+# ==============================================================================
+# FASE 3: Limpieza Post-Recuperación e Inspección Final
+# ==============================================================================
+- name: LIMPIEZA - Eliminar archivos de restore temporales del host Ansible controlador
+  ansible.builtin.file:
+    path: "/tmp/ansible-etcd-restore"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: etcd_restore_source == 'backup_server'
+
+- name: LIMPIEZA - Eliminar archivo subido temporal en el Master
+  ansible.builtin.file:
+    path: "{{ etcd_local_backup_dir }}/restore-target.db.gz"
+    state: absent
+
+- name: INSPECCIÓN - Validar que la API de Kubernetes responda (kubectl get nodes)
+  ansible.builtin.command: kubectl get nodes
+  register: kubectl_nodes_check
+  changed_when: false
+  retries: 5
+  delay: 10
+  until: kubectl_nodes_check.rc == 0
+
+- name: INSPECCIÓN - Mostrar estado de los Nodos K8s post-restauración
+  ansible.builtin.debug:
+    var: kubectl_nodes_check.stdout_lines

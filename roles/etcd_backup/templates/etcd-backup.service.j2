@@ -1,0 +1,14 @@
+[Unit]
+Description=Servicio de Copia de Seguridad Automatizada de etcd K8s
+Documentation=https://github.com/etcd-io/etcd
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/etcd-backup.sh
+User=root
+Group=root
+WorkingDirectory=/var/lib/etcd-backups
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true

@@ -1,0 +1,22 @@
+---
+# roles/etcd_backup/defaults/main.yml
+# Valores por defecto para el rol etcd_backup (pueden ser sobreescritos en group_vars/host_vars)
+
+etcd_client_port: 2379
+etcd_cert_dir: "/etc/kubernetes/pki/etcd"
+etcd_ca_cert: "{{ etcd_cert_dir }}/ca.crt"
+etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
+etcd_client_key: "{{ etcd_cert_dir }}/server.key"
+
+etcd_local_backup_dir: "/var/lib/etcd-backups"
+etcd_backup_server_dir: "/srv/backup/kubernetes/etcd"
+
+etcd_transfer_mode: "controller_mediated"
+
+# --- Políticas de Retención ---
+# Cantidad de copias de seguridad a retener en los servidores de backup por cada master.
+# En el origen (masters), la retención de las últimas 3 copias ya es gestionada por el motor interno de Kubernetes.
+etcd_backup_server_retention_count: 3
+
+etcd_backup_timer_calendar: "*-*-* 04:00:00" # Cada 4 horas por defecto
+etcd_backup_timer_accuracy: "5m"
