@@ -14,6 +14,26 @@
   run_once: true
 
 # ==============================================================================
+# DETECCIÓN: Buscar snapshot si la variable no está definida (ej. al usar tags)
+# ==============================================================================
+- name: TRANSFERENCIA - Buscar el último snapshot disponible en el nodo Master
+  ansible.builtin.find:
+    paths: "{{ etcd_local_backup_dir }}"
+    patterns: "etcd-snapshot-*.db.gz"
+  register: local_found_snapshots
+  when: etcd_snapshot_gz is not defined
+
+- name: TRANSFERENCIA - Validar que existan snapshots en el nodo Master
+  ansible.builtin.fail:
+    msg: "No se encontraron archivos de backup (*.db.gz) en el directorio {{ etcd_local_backup_dir }} del nodo Master."
+  when: etcd_snapshot_gz is not defined and (local_found_snapshots.files is not defined or local_found_snapshots.files | length == 0)
+
+- name: TRANSFERENCIA - Establecer ruta del snapshot más reciente encontrado
+  ansible.builtin.set_fact:
+    etcd_snapshot_gz: "{{ (local_found_snapshots.files | sort(attribute='mtime', reverse=true) | first).path }}"
+  when: etcd_snapshot_gz is not defined
+
+# ==============================================================================
 # MODO 1: Mediante la Máquina Controladora (Controller-Mediated Transfer)
 # ==============================================================================
 - name: TRANSFERENCIA [Modo Controlador] - Descargar snapshot al host Ansible controlador
