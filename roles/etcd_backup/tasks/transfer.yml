@@ -81,3 +81,12 @@
   delegate_to: "{{ inventory_hostname }}"
   loop: "{{ groups['backup_servers'] }}"
   when: etcd_transfer_mode == 'direct_rsync'
+
+# ==============================================================================
+# LIMPIEZA: Eliminar snapshot comprimido de tránsito en el Master
+# ==============================================================================
+- name: TRANSFERENCIA - Eliminar archivo comprimido temporal de tránsito en el Master
+  ansible.builtin.file:
+    path: "{{ etcd_snapshot_gz }}"
+    state: absent
+

@@ -9,6 +9,7 @@ etcd_client_cert: "{{ etcd_cert_dir }}/server.crt"
 etcd_client_key: "{{ etcd_cert_dir }}/server.key"
 
 etcd_local_backup_dir: "/var/lib/etcd-backups"
+rke2_snapshot_dir: "/var/lib/rancher/rke2/server/db/snapshots"
 etcd_backup_server_dir: "/srv/backup/kubernetes/etcd"
 
 etcd_transfer_mode: "controller_mediated"

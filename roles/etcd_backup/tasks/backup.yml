@@ -1,7 +1,8 @@
 ---
 # roles/etcd_backup/tasks/backup.yml
+# Proceso de adquisición del Snapshot de etcd nativo de RKE2
 
-- name: Validar que el directorio de backup local exista en el K8s Master
+- name: Validar que el directorio de tránsito local exista en el Master
   ansible.builtin.file:
     path: "{{ etcd_local_backup_dir }}"
     state: directory
@@ -9,54 +10,45 @@
     owner: root
     group: root
 
-- name: Definir el nombre del archivo del snapshot
+- name: RKE2 - Buscar snapshots automáticos generados por RKE2 en el Master
+  ansible.builtin.find:
+    paths: "{{ rke2_snapshot_dir }}"
+    patterns: "etcd-snapshot-*"
+  register: rke2_found_snapshots
+
+- name: RKE2 - Validar si existen snapshots de RKE2
+  ansible.builtin.fail:
+    msg: "Error: No se encontraron snapshots de etcd en la ruta oficial de RKE2: {{ rke2_snapshot_dir }}"
+  when: rke2_found_snapshots.files is not defined or rke2_found_snapshots.files | length == 0
+
+- name: RKE2 - Identificar el snapshot de RKE2 más reciente
+  ansible.builtin.set_fact:
+    rke2_latest_snapshot: "{{ rke2_found_snapshots.files | sort(attribute='mtime', reverse=true) | first }}"
+
+- name: Definir variables del snapshot para el tránsito
   ansible.builtin.set_fact:
     etcd_snapshot_time: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
 
-- name: Establecer nombres de archivos de backup
+- name: Establecer rutas de tránsito para compresión
   ansible.builtin.set_fact:
     etcd_snapshot_db: "{{ etcd_local_backup_dir }}/etcd-snapshot-{{ etcd_snapshot_time }}.db"
     etcd_snapshot_gz: "{{ etcd_local_backup_dir }}/etcd-snapshot-{{ etcd_snapshot_time }}.db.gz"
 
-- name: Validar existencia de certificados TLS de etcd
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  register: etcd_certs_stat
-  loop:
-    - "{{ etcd_ca_cert }}"
-    - "{{ etcd_client_cert }}"
-    - "{{ etcd_client_key }}"
+- name: RKE2 - Copiar el snapshot más reciente al directorio de tránsito
+  ansible.builtin.copy:
+    src: "{{ rke2_latest_snapshot.path }}"
+    dest: "{{ etcd_snapshot_db }}"
+    mode: '0600'
+    owner: root
+    group: root
+    remote_src: true
 
-- name: Falla si falta algún certificado TLS
-  ansible.builtin.fail:
-    msg: "Error: No se encontró el certificado de etcd en la ruta: {{ item.item }}"
-  when: not item.stat.exists
-  loop: "{{ etcd_certs_stat.results }}"
-
-- name: Ejecutar etcdctl para generar snapshot de etcd
-  ansible.builtin.shell: |
-    export ETCDCTL_API=3
-    etcdctl \
-      --endpoints="https://127.0.0.1:{{ etcd_client_port }}" \
-      --cacert="{{ etcd_ca_cert }}" \
-      --cert="{{ etcd_client_cert }}" \
-      --key="{{ etcd_client_key }}" \
-      snapshot save "{{ etcd_snapshot_db }}"
-  environment:
-    ETCDCTL_API: "3"
-  changed_when: true
-  register: etcdctl_output
-
-- name: Mostrar resultado de etcdctl
-  ansible.builtin.debug:
-    var: etcdctl_output.stdout_lines
-
-- name: Comprimir el Snapshot generado (Gzip)
+- name: RKE2 - Comprimir el Snapshot copiado (Gzip) y eliminar copia sin comprimir
   community.general.archive:
     path: "{{ etcd_snapshot_db }}"
     dest: "{{ etcd_snapshot_gz }}"
     format: gz
-    remove: true # Eliminar el archivo original sin comprimir para ahorrar espacio
+    remove: true
 
 - name: Obtener estadísticas del archivo comprimido
   ansible.builtin.stat:
@@ -65,4 +57,5 @@
 
 - name: Informar tamaño del backup generado
   ansible.builtin.debug:
-    msg: "Backup generado exitosamente en {{ etcd_snapshot_gz }}. Tamaño comprimido: {{ (snapshot_gz_stat.stat.size / 1024 / 1024) | round(2) }} MB"
+    msg: "Snapshot de RKE2 ({{ rke2_latest_snapshot.path | basename }}) copiado y comprimido exitosamente en {{ etcd_snapshot_gz }}. Tamaño comprimido: {{ (snapshot_gz_stat.stat.size / 1024 / 1024) | round(2) }} MB"
+

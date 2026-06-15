@@ -14,16 +14,17 @@ En este modo (por defecto), los nodos master y de almacenamiento no requieren co
 ```mermaid
 sequenceDiagram
     participant Ansible as Ansible Controller (Localhost)
-    participant Master as K8s Master Node (etcd)
+    participant Master as K8s Master Node (RKE2)
     participant Storage as Backup Storage Server
     
     Ansible->>Master: 1. Inicia Tareas de Backup
-    Master->>Master: 2. Ejecuta 'etcdctl snapshot save'
-    Master->>Master: 3. Comprime snapshot (.db.gz)
+    Master->>Master: 2. Localiza snapshot de RKE2 más reciente
+    Master->>Master: 3. Copia y comprime temporalmente (.db.gz)
     Ansible->>Master: 4. Descarga temporal vía FETCH
     Master-->>Ansible: Envía archivo comprimido (.db.gz)
     Ansible->>Storage: 5. Sube copia mediante COPY/rsync
-    Ansible->>Storage: 6. Limpia archivos antiguos en Storage (Retiene las últimas N copias)
+    Ansible->>Master: 6. Elimina copia comprimida de tránsito
+    Ansible->>Storage: 7. Limpia archivos antiguos en Storage (Retiene las últimas N copias)
 ```
 
 ---
@@ -38,8 +39,9 @@ El proyecto sigue las mejores prácticas de Ansible. Los archivos principales so
 
 ### Variables Principales (`group_vars/all.yml`)
 - `etcd_transfer_mode`: `"controller_mediated"` (recomendado para redes segmentadas) o `"direct_rsync"`.
+- `rke2_snapshot_dir`: Directorio donde RKE2 guarda sus snapshots automáticos (defecto: `/var/lib/rancher/rke2/server/db/snapshots`).
 - `etcd_backup_server_retention_count`: Cantidad de copias de seguridad de etcd a retener en los servidores de backup por cada master (defecto: `3`).
-  * *Nota: La retención de las últimas 3 copias en el origen (nodos master) la gestiona el motor interno de Kubernetes.*
+  * *Nota: La retención de las últimas 3 copias en el origen (nodos master) la gestiona el motor interno de RKE2 de forma automática.*
 - `etcd_backup_timer_calendar`: Programación en formato systemd timer (defecto: `"*-*-* 04:00:00"` - cada 4 horas).
 
 ---
@@ -127,77 +129,50 @@ ansible-playbook restore.yml -e "etcd_restore_source=controller etcd_restore_fil
 
 ---
 
-### Opción B: Restauración Clínica Manual 🛠️
+### Opción B: Restauración Clínica Manual (RKE2) 🛠️
 
-En caso de que ocurra una caída masiva y debas restaurar directamente desde la consola SSH de un nodo maestro con un archivo de backup descargado manualmente, sigue esta secuencia quirúrgica:
+En caso de que ocurra una caída masiva y debas restaurar directamente desde la consola SSH de un nodo maestro con un archivo de backup descargado manualmente, sigue esta secuencia quirúrgica específica para RKE2:
 
-#### Paso 1: Detener Kubelet y los Contenedores del Plano de Control
-Accede por SSH al nodo maestro afectado como `root` y detén temporalmente la generación de pods estáticos:
+#### Paso 1: Detener el Servicio RKE2 Server
+Accede por SSH al nodo maestro afectado como `root` y detén el servicio para suspender el plano de control:
 
 ```bash
-# Crear directorio de respaldo temporal de manifiestos
-mkdir -p /tmp/k8s-manifests-backup/
-
-# Mover los manifiestos de etcd y la API fuera de la ruta de monitoreo de Kubelet
-mv /etc/kubernetes/manifests/etcd.yaml /tmp/k8s-manifests-backup/
-mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/k8s-manifests-backup/
-
-# Esperar a que docker/containerd detenga los contenedores
-sleep 15
+systemctl stop rke2-server.service
 ```
 
-#### Paso 2: Respaldo del Directorio de Datos Afectado
-**NUNCA elimines el directorio original de forma directa**. Mantén una copia por si requieres análisis forense:
+#### Paso 2: Localizar y Descomprimir el Snapshot
+Localiza el archivo de backup en formato `.db.gz` que deseas restaurar (por ejemplo, subido manualmente a `/var/lib/etcd-backups/`).
+Descompímelo directamente en el directorio de snapshots de RKE2:
 
 ```bash
-# Mover la base de datos corrupta
-mv /var/lib/etcd /var/lib/etcd-old-$(date +%s)
+gunzip -c /var/lib/etcd-backups/etcd-snapshot-xxxxxx.db.gz > /var/lib/rancher/rke2/server/db/snapshots/rke2-restore-snapshot
 ```
 
-#### Paso 3: Descomprimir y Ejecutar el Restore
-Si tu archivo está en formato `.gz`, descompímelo:
+#### Paso 3: Ejecutar el Reset de Clúster de RKE2
+Ejecuta el binario de RKE2 con el comando `--cluster-reset` apuntando al snapshot descomprimido. Esto inicializa etcd como un miembro único sano y regenera los tokens internos:
 
 ```bash
-gunzip -c /var/lib/etcd-backups/etcd-snapshot-xxxxxx.db.gz > /tmp/etcd-restore.db
+rke2 server --cluster-reset --etcd-snapshot=/var/lib/rancher/rke2/server/db/snapshots/rke2-restore-snapshot
 ```
 
-Ejecuta el restore inyectando las variables de red del nodo actual. Reemplaza `$(hostname)` e IPs según corresponda:
+*Nota: Una vez finalizado el comando de reset, verás logs que confirman que el clúster se restableció satisfactoriamente.*
+
+#### Paso 4: Iniciar el Servicio RKE2 Server
+Inicia nuevamente el plano de control:
 
 ```bash
-export ETCDCTL_API=3
-etcdctl snapshot restore /tmp/etcd-restore.db \
-  --name=$(hostname) \
-  --data-dir=/var/lib/etcd \
-  --initial-cluster="$(hostname)=https://127.0.0.1:2380" \
-  --initial-advertise-peer-urls="https://127.0.0.1:2380"
+systemctl start rke2-server.service
 ```
 
-#### Paso 4: Ajustar Permisos de Seguridad
-Asegura que etcd (que se ejecuta como root dentro del pod estático en kubeadm) pueda leer los datos restaurados con el contexto de seguridad correcto:
+#### Paso 5: Validar la Salud del Clúster y de RKE2
+Monitorea los logs de arranque del servidor y valida que la API de Kubernetes responda correctamente:
 
 ```bash
-chown -R root:root /var/lib/etcd
-chmod -R 700 /var/lib/etcd
-```
+# Monitorear logs de inicialización
+journalctl -u rke2-server -f -n 100
 
-#### Paso 5: Reactivar el Plano de Control de Kubernetes
-Regresa los manifiestos a su ubicación original para que `kubelet` los vuelva a instanciar de forma automática:
-
-```bash
-mv /tmp/k8s-manifests-backup/etcd.yaml /etc/kubernetes/manifests/
-mv /tmp/k8s-manifests-backup/kube-apiserver.yaml /etc/kubernetes/manifests/
-
-# Esperar arranque del clúster
-sleep 20
-```
-
-#### Paso 6: Validar Salud y Estado de K8s
-Monitorea que la API esté respondiendo y los componentes estén saludables:
-
-```bash
-kubectl get nodes
-kubectl get pods -n kube-system -l component=etcd
-kubectl get pods -n kube-system -l component=kube-apiserver
+# Validar que los nodos estén listos
+/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
 ```
 
 ---

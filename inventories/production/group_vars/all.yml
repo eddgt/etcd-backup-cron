@@ -15,6 +15,7 @@ etcd_client_key: "{{ etcd_cert_dir }}/server.key"
 
 # Directorio temporal local en el nodo Master de K8s para guardar el snapshot inicial
 etcd_local_backup_dir: "/var/lib/etcd-backups"
+rke2_snapshot_dir: "/var/lib/rancher/rke2/server/db/snapshots"
 
 # --- Configuración del Destino y Transferencia ---
 # Método de transferencia:
