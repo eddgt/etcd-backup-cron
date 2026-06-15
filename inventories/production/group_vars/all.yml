@@ -2,7 +2,7 @@
 # inventories/production/group_vars/all.yml
 
 # --- Configuración General de Conexión ---
-ansible_user: devops
+ansible_user: ansible
 ansible_ssh_private_key_file: "~/.ssh/id_rsa"
 
 # --- Configuración del Backup de etcd ---
@@ -32,6 +32,6 @@ etcd_backup_server_retention_count: 3
 
 # --- Automatización Periódica ---
 # Configuración del temporizador Systemd en el Master
-etcd_backup_cron_hour: "0"       # Si usas cron: Medianoche
+etcd_backup_cron_hour: "0" # Si usas cron: Medianoche
 etcd_backup_cron_minute: "0"
-etcd_backup_timer_calendar: "*-*-* 04:00:00"  # Systemd Timer: Cada 4 horas
+etcd_backup_timer_calendar: "*-*-* 04:00:00" # Systemd Timer: Cada 4 horas
