@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reporte de Salud - Clúster Kubernetes RKE2</title>
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      --bg-card: rgba(30, 41, 59, 0.7);
+      --bg-card-hover: rgba(30, 41, 59, 0.95);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      
+      --accent-indigo: #6366f1;
+      --accent-indigo-glow: rgba(99, 102, 241, 0.15);
+      --accent-success: #10b981;
+      --accent-success-glow: rgba(16, 185, 129, 0.2);
+      --accent-warning: #f59e0b;
+      --accent-warning-glow: rgba(245, 158, 11, 0.2);
+      --accent-danger: #ef4444;
+      --accent-danger-glow: rgba(239, 68, 68, 0.2);
+      
+      --border-light: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(99, 102, 241, 0.3);
+      --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Light Theme Override Variables */
+    body.light-mode {
+      --bg-gradient: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+      --bg-card: rgba(255, 255, 255, 0.85);
+      --bg-card-hover: rgba(255, 255, 255, 1);
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --border-light: rgba(15, 23, 42, 0.08);
+      --border-accent: rgba(99, 102, 241, 0.4);
+      --accent-indigo-glow: rgba(99, 102, 241, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      font-family: var(--font-family);
+      min-height: 100vh;
+      padding: 2rem;
+      transition: background 0.3s ease, color 0.3s ease;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    /* Header styling */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2.5rem;
+      border-bottom: 1px solid var(--border-light);
+      padding-bottom: 1.5rem;
+    }
+
+    .brand-section h1 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      background: linear-gradient(to right, #a5b4fc, #818cf8, #6366f1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.25rem;
+    }
+
+    .brand-section p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .theme-toggle {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      color: var(--text-main);
+      padding: 0.6rem 1.2rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: var(--transition);
+    }
+
+    .theme-toggle:hover {
+      background: var(--accent-indigo);
+      color: #ffffff;
+      border-color: var(--accent-indigo);
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+    }
+
+    /* KPI Summary Cards Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .kpi-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--border-light);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      transition: var(--transition);
+    }
+
+    .kpi-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--border-accent);
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15);
+    }
+
+    .kpi-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+    }
+
+    .kpi-card.kpi-indigo::before { background-color: var(--accent-indigo); }
+    .kpi-card.kpi-success::before { background-color: var(--accent-success); }
+    .kpi-card.kpi-warning::before { background-color: var(--accent-warning); }
+    .kpi-card.kpi-danger::before { background-color: var(--accent-danger); }
+
+    .kpi-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .kpi-value {
+      font-size: 2rem;
+      font-weight: 800;
+      margin-bottom: 0.25rem;
+    }
+
+    .kpi-subtext {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* Dashboard Layout Section Tabs */
+    .tabs {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border-light);
+      padding-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.6rem 1.2rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 0.5rem;
+      transition: var(--transition);
+    }
+
+    .tab-btn:hover, .tab-btn.active {
+      color: var(--text-main);
+      background: var(--bg-card);
+    }
+
+    .tab-btn.active {
+      box-shadow: inset 0 0 0 1px var(--border-accent);
+      background: var(--accent-indigo-glow);
+      color: #818cf8;
+    }
+
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.4s ease;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* General Panel/Card Styling */
+    .panel {
+      background: var(--bg-card);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--border-light);
+      border-radius: 1rem;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      transition: var(--transition);
+    }
+
+    .panel:hover {
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+    }
+
+    .panel-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      border-left: 4px solid var(--accent-indigo);
+      padding-left: 0.75rem;
+    }
+
+    /* Table styling */
+    .table-container {
+      overflow-x: auto;
+      margin-top: 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border-light);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.95rem;
+    }
+
+    th {
+      background: rgba(15, 23, 42, 0.4);
+      padding: 1rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-light);
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-light);
+      vertical-align: middle;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: var(--bg-card-hover);
+    }
+
+    /* Badge designs */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .badge-success {
+      background-color: var(--accent-success-glow);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-warning {
+      background-color: var(--accent-warning-glow);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-danger {
+      background-color: var(--accent-danger-glow);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    /* Progress bar design */
+    .progress-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      width: 100%;
+      min-width: 120px;
+    }
+
+    .progress-bar-bg {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 9999px;
+      height: 8px;
+      flex-grow: 1;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 9999px;
+      transition: width 0.8s ease-out;
+    }
+
+    .progress-green {
+      background: linear-gradient(90deg, #10b981, #059669);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+    }
+
+    .progress-orange {
+      background: linear-gradient(90deg, #f59e0b, #d97706);
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+    }
+
+    .progress-red {
+      background: linear-gradient(90deg, #ef4444, #dc2626);
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+    }
+
+    .progress-value {
+      font-size: 0.85rem;
+      font-weight: 700;
+      width: 35px;
+      text-align: right;
+    }
+
+    /* System metrics specific styling */
+    .infra-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .node-infra-card {
+      background: rgba(15, 23, 42, 0.25);
+      border: 1px solid var(--border-light);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+    }
+
+    .node-infra-card h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid var(--border-light);
+      padding-bottom: 0.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .metric-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .metric-name {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1.5rem;
+      color: var(--text-muted);
+    }
+
+    .empty-state svg {
+      width: 48px;
+      height: 48px;
+      margin-bottom: 1rem;
+      opacity: 0.5;
+    }
+
+    .empty-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 0.25rem;
+    }
+
+    /* Status indicator dot */
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 0.5rem;
+    }
+    .status-dot-green { background-color: var(--accent-success); box-shadow: 0 0 8px var(--accent-success); }
+    .status-dot-red { background-color: var(--accent-danger); box-shadow: 0 0 8px var(--accent-danger); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="brand-section">
+        <h1>Kubernetes Health Dashboard</h1>
+        <p>Reporte automático de salud clúster RKE2 • Generado el {{ generation_time }}</p>
+      </div>
+      <div class="controls">
+        <button class="theme-toggle" onclick="toggleTheme()">
+          <span id="theme-icon">☀️</span> <span id="theme-text">Modo Claro</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- KPI Summary Cards -->
+    <div class="kpi-grid">
+      <!-- API Server Status -->
+      <div class="kpi-card {% if api_health and api_ready %}kpi-success{% else %}kpi-danger{% endif %}">
+        <div class="kpi-label">API Server Status</div>
+        <div class="kpi-value">
+          {% if api_health and api_ready %}ONLINE{% else %}ERROR{% endif %}
+        </div>
+        <div class="kpi-subtext">
+          Livez: {% if api_health %}Sano{% else %}Falla{% endif %} | Readyz: {% if api_ready %}Listo{% else %}Falla{% endif %}
+        </div>
+      </div>
+
+      <!-- Nodes Summary -->
+      {% set total_nodes = nodes_data.items | length %}
+      {% set ready_nodes = namespace(count=0) %}
+      {% for node in nodes_data.items %}
+        {% set node_ready = namespace(status="False") %}
+        {% for cond in node.status.conditions %}
+          {% if cond.type == "Ready" and cond.status == "True" %}
+            {% set node_ready.status = "True" %}
+          {% endif %}
+        {% endfor %}
+        {% if node_ready.status == "True" %}
+          {% set ready_nodes.count = ready_nodes.count + 1 %}
+        {% endif %}
+      {% endfor %}
+      <div class="kpi-card {% if ready_nodes.count == total_nodes %}kpi-success{% elif ready_nodes.count > 0 %}kpi-warning{% else %}kpi-danger{% endif %}">
+        <div class="kpi-label">Nodos Activos</div>
+        <div class="kpi-value">{{ ready_nodes.count }} / {{ total_nodes }}</div>
+        <div class="kpi-subtext">Nodos en estado 'Ready' en el clúster.</div>
+      </div>
+
+      <!-- Unhealthy Pods Count -->
+      {% set unhealthy_pods_count = unhealthy_pods_data | length %}
+      <div class="kpi-card {% if unhealthy_pods_count == 0 %}kpi-success{% elif unhealthy_pods_count < 5 %}kpi-warning{% else %}kpi-danger{% endif %}">
+        <div class="kpi-label">Pods con Alertas</div>
+        <div class="kpi-value">{{ unhealthy_pods_count }}</div>
+        <div class="kpi-subtext">Pods fuera de estado 'Running' o 'Completed'.</div>
+      </div>
+
+      <!-- Warnings Count -->
+      {% set warning_events_count = warning_events_data | length %}
+      <div class="kpi-card {% if warning_events_count == 0 %}kpi-success{% elif warning_events_count < 10 %}kpi-warning{% else %}kpi-danger{% endif %}">
+        <div class="kpi-label">Eventos Warning (2h)</div>
+        <div class="kpi-value">{{ warning_events_count }}</div>
+        <div class="kpi-subtext">Advertencias detectadas recientemente.</div>
+      </div>
+    </div>
+
+    <!-- Section Navigation Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" onclick="openTab(event, 'nodes')">Nodos K8s</button>
+      <button class="tab-btn" onclick="openTab(event, 'pods')">Pods con Alertas ({{ unhealthy_pods_count }})</button>
+      <button class="tab-btn" onclick="openTab(event, 'infra')">Recursos de Infraestructura</button>
+      <button class="tab-btn" onclick="openTab(event, 'events')">Eventos Recientes ({{ warning_events_count }})</button>
+    </div>
+
+    <!-- TAB: Nodes -->
+    <div id="nodes" class="tab-content active">
+      <div class="panel">
+        <div class="panel-title">Estado de Nodos Kubernetes</div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Nombre del Nodo</th>
+                <th>Estado K8s</th>
+                <th>Roles</th>
+                <th>Versión Kubelet/RKE2</th>
+                <th>Sistema Operativo</th>
+                <th>Kernel</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for node in nodes_data.items %}
+              {% set is_ready = namespace(val=false) %}
+              {% for cond in node.status.conditions %}
+                {% if cond.type == "Ready" and cond.status == "True" %}
+                  {% set is_ready.val = true %}
+                {% endif %}
+              {% endfor %}
+              
+              {% set roles = [] %}
+              {% for key, val in node.metadata.labels.items() %}
+                {% if "node-role.kubernetes.io" in key %}
+                  {% set _ = roles.append(key.split('/')[-1]) %}
+                {% endif %}
+              {% endfor %}
+              {% if roles | length == 0 %}
+                {% set _ = roles.append("<none>") %}
+              {% endif %}
+              <tr>
+                <td><strong>{{ node.metadata.name }}</strong></td>
+                <td>
+                  {% if is_ready.val %}
+                    <span class="badge badge-success"><span class="status-dot status-dot-green"></span>Ready</span>
+                  {% else %}
+                    <span class="badge badge-danger"><span class="status-dot status-dot-red"></span>NotReady</span>
+                  {% endif %}
+                </td>
+                <td>{{ roles | join(', ') }}</td>
+                <td>{{ node.status.nodeInfo.kubeletVersion }}</td>
+                <td>{{ node.status.nodeInfo.osImage }}</td>
+                <td>{{ node.status.nodeInfo.kernelVersion }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: Unhealthy Pods -->
+    <div id="pods" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">Pods Fuera de Operación Normal</div>
+        {% if unhealthy_pods_count > 0 %}
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Namespace</th>
+                <th>Nombre del Pod</th>
+                <th>Estado</th>
+                <th>IP del Pod</th>
+                <th>Reinicios</th>
+                <th>Edad</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for pod in unhealthy_pods_data %}
+              {% set restarts = namespace(count=0) %}
+              {% if pod.status.containerStatuses is defined %}
+                {% for cs in pod.status.containerStatuses %}
+                  {% set restarts.count = restarts.count + cs.restartCount %}
+                {% endfor %}
+              {% endif %}
+              <tr>
+                <td><span class="badge badge-warning" style="text-transform: none;">{{ pod.metadata.namespace }}</span></td>
+                <td><strong>{{ pod.metadata.name }}</strong></td>
+                <td>
+                  <span class="badge badge-danger">{{ pod.status.phase }}</span>
+                  {% if pod.status.reason is defined %}
+                    <br><small style="color: var(--text-muted)">{{ pod.status.reason }}</small>
+                  {% endif %}
+                </td>
+                <td>{{ pod.status.podIP | default('N/A') }}</td>
+                <td>{{ restarts.count }}</td>
+                <td>{{ pod.metadata.creationTimestamp | default('N/A') }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <div class="empty-title">¡Todo Sano!</div>
+          <p>No se encontraron pods en estados de error o advertencia en el clúster.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- TAB: Infra / OS metrics -->
+    <div id="infra" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">Recursos del Host y Estado de Servicios (Recopilado por Ansible)</div>
+        <div class="infra-grid">
+          {% for host in groups['control_planes'] %}
+          {% set host_facts = hostvars[host] %}
+          <div class="node-infra-card">
+            <h3>
+              <span>{{ host }}</span>
+              {% if host_facts.ansible_facts is defined %}
+                <span class="badge badge-success">Conectado</span>
+              {% else %}
+                <span class="badge badge-danger">Inalcanzable</span>
+              {% endif %}
+            </h3>
+            
+            {% if host_facts.ansible_facts is defined %}
+              <!-- RAM usage -->
+              {% set mem_total = host_facts.ansible_memtotal_mb %}
+              {% set mem_free = host_facts.ansible_memfree_mb %}
+              {% set mem_used = mem_total - mem_free %}
+              {% set mem_pct = (mem_used / mem_total * 100) | round | int %}
+              <div class="metric-row">
+                <div class="metric-name">Uso de Memoria RAM</div>
+                <div style="width: 60%">
+                  <div class="progress-wrapper">
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill {% if mem_pct > 85 %}progress-red{% elif mem_pct > 70 %}progress-orange{% else %}progress-green{% endif %}" style="width: {{ mem_pct }}%"></div>
+                    </div>
+                    <span class="progress-value">{{ mem_pct }}%</span>
+                  </div>
+                  <small style="color: var(--text-muted); display: block; text-align: right; font-size: 0.75rem;">
+                    {{ (mem_used / 1024) | round(1) }} GB / {{ (mem_total / 1024) | round(1) }} GB
+                  </small>
+                </div>
+              </div>
+
+              <!-- Disk / root partition usage -->
+              {% set disk_pct = host_facts.disk_root_percent | default(0) | int %}
+              <div class="metric-row">
+                <div class="metric-name">Uso de Disco (Partición Raíz)</div>
+                <div style="width: 60%">
+                  <div class="progress-wrapper">
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill {% if disk_pct > 85 %}progress-red{% elif disk_pct > 70 %}progress-orange{% else %}progress-green{% endif %}" style="width: {{ disk_pct }}%"></div>
+                    </div>
+                    <span class="progress-value">{{ disk_pct }}%</span>
+                  </div>
+                  <small style="color: var(--text-muted); display: block; text-align: right; font-size: 0.75rem;">
+                    {{ host_facts.disk_root_used | default('N/A') }} usado de {{ host_facts.disk_root_total | default('N/A') }}
+                  </small>
+                </div>
+              </div>
+
+              <!-- Service Status RKE2 -->
+              <div class="metric-row" style="margin-top: 1.5rem; border-top: 1px solid var(--border-light); padding-top: 1rem;">
+                <div class="metric-name">Servicio RKE2 Server</div>
+                <div>
+                  {% if host_facts.rke2_service_status | default('') == 'active' %}
+                    <span class="badge badge-success">Activo (Running)</span>
+                  {% else %}
+                    <span class="badge badge-danger">Inactivo / Detenido</span>
+                  {% endif %}
+                </div>
+              </div>
+
+              <div class="metric-row">
+                <div class="metric-name">Núcleos CPU</div>
+                <div style="font-weight: bold;">{{ host_facts.ansible_processor_vcpus }} vCPUs</div>
+              </div>
+            {% else %}
+              <div class="empty-state" style="padding: 1.5rem 0;">
+                <p style="color: var(--accent-danger)">No se pudo obtener información del host mediante Ansible.</p>
+              </div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: Warning Events -->
+    <div id="events" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">Eventos de Advertencia (Últimas {{ events_time_window | default('2h') }})</div>
+        {% if warning_events_count > 0 %}
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Namespace</th>
+                <th>Objeto Involucrado</th>
+                <th>Razón</th>
+                <th>Mensaje</th>
+                <th>Última Ocurrencia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for ev in warning_events_data %}
+              <tr>
+                <td><span class="badge badge-warning" style="text-transform: none;">{{ ev.metadata.namespace | default('default') }}</span></td>
+                <td><strong>{{ ev.involvedObject.kind }}/{{ ev.involvedObject.name }}</strong></td>
+                <td><span class="badge badge-danger" style="background-color: rgba(239, 68, 68, 0.15)">{{ ev.reason }}</span></td>
+                <td><small>{{ ev.message }}</small></td>
+                <td>{{ ev.lastTimestamp | default(ev.eventTime) | default('N/A') }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <div class="empty-title">Sin advertencias recientes</div>
+          <p>No se registraron eventos tipo 'Warning' en la ventana de tiempo especificada.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tab switching logic
+    function openTab(evt, tabName) {
+      const tabcontents = document.getElementsByClassName("tab-content");
+      for (let i = 0; i < tabcontents.length; i++) {
+        tabcontents[i].classList.remove("active");
+      }
+
+      const tablinks = document.getElementsByClassName("tab-btn");
+      for (let i = 0; i < tablinks.length; i++) {
+        tablinks[i].classList.remove("active");
+      }
+
+      document.getElementById(tabName).classList.add("active");
+      evt.currentTarget.classList.add("active");
+    }
+
+    // Light/Dark mode switcher logic
+    function toggleTheme() {
+      const body = document.body;
+      const themeText = document.getElementById("theme-text");
+      const themeIcon = document.getElementById("theme-icon");
+      
+      if (body.classList.contains("light-mode")) {
+        body.classList.remove("light-mode");
+        themeText.innerText = "Modo Claro";
+        themeIcon.innerText = "☀️";
+        localStorage.setItem("theme", "dark");
+      } else {
+        body.add("light-mode");
+        body.classList.add("light-mode");
+        themeText.innerText = "Modo Oscuro";
+        themeIcon.innerText = "🌙";
+        localStorage.setItem("theme", "light");
+      }
+    }
+
+    // Set initial theme based on localStorage preference
+    window.addEventListener("DOMContentLoaded", () => {
+      const savedTheme = localStorage.getItem("theme");
+      if (savedTheme === "light") {
+        document.body.classList.add("light-mode");
+        document.getElementById("theme-text").innerText = "Modo Oscuro";
+        document.getElementById("theme-icon").innerText = "🌙";
+      }
+    });
+  </script>
+</body>
+</html>

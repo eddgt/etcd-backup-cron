@@ -1,0 +1,145 @@
+---
+# roles/cluster_health/tasks/main.yml
+
+# ==========================================
+# 1. Tareas a nivel de host (Ejecutan en todos los nodos)
+# ==========================================
+
+- name: Obtener uso del disco raíz
+  ansible.builtin.set_fact:
+    disk_root_used: "{{ ((item.size_total - item.size_available) / 1024 / 1024 / 1024) | round(1) }} GB"
+    disk_root_total: "{{ (item.size_total / 1024 / 1024 / 1024) | round(1) }} GB"
+    disk_root_percent: "{{ ((item.size_total - item.size_available) / item.size_total * 100) | round | int }}"
+  loop: "{{ ansible_mounts }}"
+  when: item.mount == "/"
+
+- name: Verificar estado del servicio rke2-server
+  ansible.builtin.command: systemctl is-active rke2-server
+  register: rke2_service_check
+  failed_when: false
+  changed_when: false
+
+- name: Definir fact de estado de RKE2
+  ansible.builtin.set_fact:
+    rke2_service_status: "{{ rke2_service_check.stdout | trim }}"
+
+# ==========================================
+# 2. Tareas a nivel de Kubernetes (Ejecutan una vez en el master primario)
+# ==========================================
+
+- name: Consultar nodos de Kubernetes
+  ansible.builtin.command:
+    cmd: "{{ rke2_kubectl_path }} --kubeconfig {{ rke2_kubeconfig_path }} get nodes -o json"
+  register: k8s_nodes_raw
+  run_once: true
+  changed_when: false
+
+- name: Guardar fact de datos de nodos
+  ansible.builtin.set_fact:
+    nodes_json: "{{ k8s_nodes_raw.stdout | from_json }}"
+  run_once: true
+
+- name: Verificar salud del API Server (livez)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:6443/livez"
+    validate_certs: false
+  register: api_livez_res
+  run_once: true
+  failed_when: false
+
+- name: Verificar listura del API Server (readyz)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:6443/readyz"
+    validate_certs: false
+  register: api_readyz_res
+  run_once: true
+  failed_when: false
+
+- name: Consultar todos los pods del clúster
+  ansible.builtin.command:
+    cmd: "{{ rke2_kubectl_path }} --kubeconfig {{ rke2_kubeconfig_path }} get pods -A -o json"
+  register: k8s_pods_raw
+  run_once: true
+  changed_when: false
+
+- name: Filtrar pods no saludables o con fallas
+  ansible.builtin.set_fact:
+    unhealthy_pods: >-
+      {%- set pods = [] -%}
+      {%- for pod in (k8s_pods_raw.stdout | from_json).items | default([]) -%}
+        {%- set is_unhealthy = namespace(val=false) -%}
+        {%- if pod.status.phase != 'Running' and pod.status.phase != 'Succeeded' -%}
+          {%- set is_unhealthy.val = true -%}
+        {%- endif -%}
+        {%- if pod.status.containerStatuses is defined -%}
+          {%- for cs in pod.status.containerStatuses -%}
+            {%- if not cs.ready and not (pod.status.phase == 'Succeeded') -%}
+              {%- set is_unhealthy.val = true -%}
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endif -%}
+        {%- if is_unhealthy.val -%}
+          {%- set _ = pods.append(pod) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ pods }}
+  run_once: true
+
+- name: Consultar eventos del clúster
+  ansible.builtin.command:
+    cmd: "{{ rke2_kubectl_path }} --kubeconfig {{ rke2_kubeconfig_path }} get events -A -o json"
+  register: k8s_events_raw
+  run_once: true
+  changed_when: false
+
+- name: Filtrar y ordenar eventos tipo Warning
+  ansible.builtin.set_fact:
+    warning_events: >-
+      {%- set events = [] -%}
+      {%- for ev in (k8s_events_raw.stdout | from_json).items | default([]) -%}
+        {%- if ev.type == 'Warning' -%}
+          {%- set _ = events.append(ev) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ (events | sort(attribute='lastTimestamp', reverse=true))[:20] }}
+  run_once: true
+
+# ==========================================
+# 3. Generación y descarga del reporte HTML
+# ==========================================
+
+- name: Generar el reporte HTML en el nodo master
+  ansible.builtin.template:
+    src: health_report.html.j2
+    dest: "{{ cluster_health_report_dest }}"
+    mode: '0644'
+  run_once: true
+  vars:
+    nodes_data: "{{ nodes_json }}"
+    unhealthy_pods_data: "{{ unhealthy_pods }}"
+    warning_events_data: "{{ warning_events }}"
+    api_health: "{{ true if api_livez_res.status == 200 else false }}"
+    api_ready: "{{ true if api_readyz_res.status == 200 else false }}"
+    generation_time: "{{ lookup('pipe', 'date +\"%Y-%m-%d %H:%M:%S %Z\"') }}"
+    events_time_window: "{{ cluster_health_events_time_window }}"
+
+- name: Asegurar que el directorio de reportes local existe en el controlador
+  ansible.builtin.file:
+    path: "{{ cluster_health_local_report_dest | dirname }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+
+- name: Descargar el reporte al controlador local
+  ansible.builtin.fetch:
+    src: "{{ cluster_health_report_dest }}"
+    dest: "{{ cluster_health_local_report_dest }}"
+    flat: true
+  run_once: true
+
+- name: Limpiar reporte temporal en el nodo master remoto
+  ansible.builtin.file:
+    path: "{{ cluster_health_report_dest }}"
+    state: absent
+  run_once: true
