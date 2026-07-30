@@ -1,0 +1,9 @@
+---
+# cluster_health.yml - Playbook principal de Reporte de Salud de Kubernetes
+- name: Generar Reporte de Salud y Estado del Clúster
+  hosts: control_planes
+  become: true
+  gather_facts: true
+  roles:
+    - role: cluster_health
+      tags: [health, report]
